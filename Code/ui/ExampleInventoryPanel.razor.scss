@@ -1,0 +1,157 @@
+ExampleInventoryPanel {
+  position: absolute;
+  background-color: rgb(20, 20, 25);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: Poppins;
+  display: flex;
+  flex-direction: column;
+
+  .inventory-header {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+
+    .inventory-title {
+      font-size: 16px;
+      font-weight: bold;
+      color: white;
+    }
+
+    .inventory-header-right {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .auto-sort-button, .merge-stacks-button {
+      background-color: rgb(50, 50, 60);
+      border: 1px solid rgb(80, 80, 90);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 14px;
+      color: white;
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover {
+        background-color: rgb(70, 70, 85);
+        border-color: rgb(100, 150, 255);
+      }
+
+      &:active {
+        background-color: rgb(40, 40, 50);
+        transform: scale(0.95);
+      }
+    }
+
+    .inventory-size {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.5);
+    }
+  }
+
+  .inventory-grid {
+    position: relative;
+    background-color: rgb(15, 15, 18);
+    border-radius: 4px;
+  }
+
+  .grid-cell {
+    position: absolute;
+    background-color: rgb(35, 35, 40);
+    border-radius: 4px;
+    border: 1px solid rgb(50, 50, 55);
+  }
+
+  .inventory-item {
+    position: absolute;
+    background-color: rgb(60, 60, 70);
+    border: 2px solid rgb(80, 80, 90);
+    border-radius: 6px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+
+    &:hover {
+      border-color: rgb(100, 150, 255);
+      background-color: rgb(70, 70, 85);
+    }
+
+    &.selected {
+      border-color: rgb(100, 200, 255);
+      background-color: rgb(50, 70, 90);
+    }
+
+    &.dragging {
+      opacity: 0.3;
+    }
+
+    .item-name {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.9);
+      text-align: center;
+      padding: 4px;
+    }
+
+    .item-stack {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 11px;
+      font-weight: bold;
+      color: white;
+    }
+  }
+
+  .drag-preview {
+    position: absolute;
+    border-radius: 6px;
+    z-index: 3;
+
+    &.valid {
+      background-color: rgba(100, 200, 100, 0.3);
+      border: 2px solid rgb(100, 200, 100);
+    }
+
+    &.invalid {
+      background-color: rgba(200, 100, 100, 0.3);
+      border: 2px solid rgb(200, 100, 100);
+    }
+  }
+
+  .drag-ghost {
+    position: absolute;
+    background-color: rgb(60, 60, 70);
+    border: 2px solid rgb(100, 200, 255);
+    border-radius: 6px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0.85;
+    pointer-events: none;
+
+    .item-name {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.9);
+      text-align: center;
+      padding: 4px;
+    }
+
+    .item-stack {
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      font-size: 11px;
+      font-weight: bold;
+      color: white;
+    }
+  }
+}

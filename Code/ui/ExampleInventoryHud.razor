@@ -1,0 +1,26 @@
+@using System
+@using Sandbox
+@using Sandbox.UI
+@inherits PanelComponent
+@namespace Sandbox.Inventory
+
+@if ( Inventory is null )
+	return;
+
+<root>
+	<ExampleInventoryPanel @ref="InventoryPanelRef" Title="Inventory" Inventory="@Inventory" />
+</root>
+
+@code {
+	public BaseInventory Inventory { get; set; }
+	public ExampleInventoryPanel InventoryPanelRef { get; set; }
+
+	protected override void OnTreeFirstBuilt()
+	{
+		base.OnTreeFirstBuilt();
+
+		Inventory = new BaseInventory( Id, 10, 5 );
+
+		StateHasChanged();
+	}
+}

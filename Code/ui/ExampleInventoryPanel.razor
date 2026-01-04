@@ -1,0 +1,342 @@
+@using System
+@using Sandbox
+@using Sandbox.UI
+@inherits Panel
+@namespace Sandbox.Inventory
+
+<root class="inventory-panel">
+	<div class="inventory-header">
+		<label class="inventory-title">@Title</label>
+		<div class="inventory-header-right">
+			<button class="merge-stacks-button" onclick="@OnConsolidateClicked">📦</button>
+			<button class="auto-sort-button" onclick="@OnAutoSortClicked">🔄</button>
+			<label class="inventory-size">@Inventory?.Width x @Inventory?.Height</label>
+		</div>
+	</div>
+
+	<div @ref="GridPanel" class="inventory-grid" style="width: @(GridWidthPx); height: @(GridHeightPx);">
+		@for ( int row = 0; row < (Inventory?.Height ?? 0); row++ )
+		{
+			@for ( int col = 0; col < (Inventory?.Width ?? 0); col++ )
+			{
+				var x = GridPadding + col * CellTotal;
+				var y = GridPadding + row * CellTotal;
+
+				<div class="grid-cell" style="left: @(x)px; top: @(y)px; width: @(CellSize)px; height: @(CellSize)px;"></div>
+			}
+		}
+
+		@if ( Inventory is not null )
+		{
+			@foreach ( var entry in Inventory.Entries )
+			{
+				var isDragging = DraggedItem == entry.Item && IsDragging;
+				var left = GridPadding + entry.Slot.X * CellTotal;
+				var top = GridPadding + entry.Slot.Y * CellTotal;
+				var width = entry.Slot.W * CellSize + (entry.Slot.W - 1) * CellGap;
+				var height = entry.Slot.H * CellSize + (entry.Slot.H - 1) * CellGap;
+
+				<div class="inventory-item @(isDragging ? "dragging" : "") @(SelectedItem == entry.Item ? "selected" : "")"
+					 style="left: @(left)px; top: @(top)px; width: @(width)px; height: @(height)px;"
+					 onmousedown="@(( e ) => OnItemMouseDown( e, entry.Item ))">
+
+					<label class="item-name">@entry.Item.DisplayName</label>
+
+					@if ( entry.Item.MaxStackSize > 1 )
+					{
+						<label class="item-stack">@entry.Item.StackCount</label>
+					}
+				</div>
+			}
+
+			@if ( DraggedItem is not null && IsDragging )
+			{
+				var previewLeft = GridPadding + DragPreviewX * CellTotal;
+				var previewTop = GridPadding + DragPreviewY * CellTotal;
+				var previewWidth = DraggedItem.Width * CellSize + (DraggedItem.Width - 1) * CellGap;
+				var previewHeight = DraggedItem.Height * CellSize + (DraggedItem.Height - 1) * CellGap;
+
+				<div class="drag-preview @(CanDropAtCurrentPosition ? "valid" : "invalid")"
+					 style="left: @(previewLeft)px; top: @(previewTop)px; width: @(previewWidth)px; height: @(previewHeight)px;">
+				</div>
+			}
+		}
+	</div>
+
+	@if ( DraggedItem is not null && IsDragging )
+	{
+		var ghostWidth = DraggedItem.Width * CellSize + (DraggedItem.Width - 1) * CellGap;
+		var ghostHeight = DraggedItem.Height * CellSize + (DraggedItem.Height - 1) * CellGap;
+		var ghostLeft = DragMouseX - ghostWidth / 2;
+		var ghostTop = DragMouseY - ghostHeight / 2;
+		var displayCount = IsSplitting ? DraggedItem.StackCount / 2 : DraggedItem.StackCount;
+
+		<div class="drag-ghost" style="left: @(ghostLeft)px; top: @(ghostTop)px; width: @(ghostWidth)px; height: @(ghostHeight)px;">
+			<label class="item-name">@DraggedItem.DisplayName</label>
+			@if ( DraggedItem.MaxStackSize > 1 )
+			{
+				<label class="item-stack">@displayCount</label>
+			}
+		</div>
+	}
+</root>
+
+@code {
+	public string Title { get; set; } = "Inventory";
+	public BaseInventory Inventory { get; set; }
+	public InventoryItem SelectedItem { get; private set; }
+
+	public event Action<InventoryItem> OnSelected;
+
+	private Panel GridPanel { get; set; }
+	private InventoryItem DraggedItem { get; set; }
+	private InventorySlot DragStartSlot { get; set; }
+	private Vector2 DragStartMousePosition { get; set; }
+	private int DragPreviewX { get; set; }
+	private int DragPreviewY { get; set; }
+	private float DragMouseX { get; set; }
+	private float DragMouseY { get; set; }
+	private bool CanDropAtCurrentPosition { get; set; }
+	private bool IsDragging { get; set; }
+	private bool IsShiftHeld { get; set; }
+	private bool IsSplitting { get; set; }
+
+	private const float CellSize = 48f;
+	private const float CellGap = 4f;
+	private const float CellTotal = CellSize + CellGap;
+	private const float GridPadding = 8f;
+	private const float DragThreshold = 5f;
+
+	private string GridWidthPx => $"{GridPadding * 2 + (Inventory?.Width ?? 1) * CellTotal - CellGap}px";
+	private string GridHeightPx => $"{GridPadding * 2 + (Inventory?.Height ?? 1) * CellTotal - CellGap}px";
+
+	protected override void OnAfterTreeRender( bool firstTime )
+	{
+		base.OnAfterTreeRender( firstTime );
+
+		if ( firstTime && Inventory is not null )
+		{
+			Inventory.OnInventoryChanged += StateHasChanged;
+		}
+	}
+
+	private async void OnAutoSortClicked()
+	{
+		if ( Inventory is null )
+			return;
+
+		await Inventory.Network.AutoSort();
+	}
+
+	private async void OnConsolidateClicked()
+	{
+		if ( Inventory is null )
+			return;
+
+		await Inventory.Network.ConsolidateStacks();
+	}
+
+	private void OnItemMouseDown( PanelEvent e, InventoryItem item )
+	{
+		if ( e is not MousePanelEvent me )
+			return;
+
+		if ( me.MouseButton != MouseButtons.Left )
+			return;
+
+		SelectedItem = item;
+		OnSelected?.Invoke( SelectedItem );
+
+		if ( Inventory.TryGetSlot( item, out var slot ) )
+		{
+			DraggedItem = item;
+			DragStartSlot = slot;
+			DragStartMousePosition = Mouse.Position;
+			IsDragging = false;
+			IsShiftHeld = Input.Keyboard.Down( "shift" );
+			IsSplitting = IsShiftHeld && item.MaxStackSize > 1 && item.StackCount > 1;
+
+			DragPreviewX = slot.X;
+			DragPreviewY = slot.Y;
+		}
+
+		e.StopPropagation();
+	}
+
+	protected override void OnMouseMove( MousePanelEvent e )
+	{
+		base.OnMouseMove( e );
+
+		if ( DraggedItem is null )
+			return;
+
+		var delta = Mouse.Position - DragStartMousePosition;
+
+		if ( !IsDragging && delta.Length < DragThreshold )
+			return;
+
+		IsDragging = true;
+		UpdateDragPosition();
+	}
+
+	private void UpdateDragPosition()
+	{
+		if ( GridPanel is null || DraggedItem is null || Inventory is null )
+			return;
+
+		DragMouseX = MousePosition.x * ScaleFromScreen;
+		DragMouseY = MousePosition.y * ScaleFromScreen;
+
+		var gridLocalX = GridPanel.MousePosition.x * ScaleFromScreen;
+		var gridLocalY = GridPanel.MousePosition.y * ScaleFromScreen;
+
+		var itemWidthInCells = DraggedItem.Width;
+		var itemHeightInCells = DraggedItem.Height;
+
+		var cursorCellX = (gridLocalX - GridPadding) / CellTotal;
+		var cursorCellY = (gridLocalY - GridPadding) / CellTotal;
+
+		var targetX = (int)MathF.Floor( cursorCellX - (itemWidthInCells - 1) / 2f );
+		var targetY = (int)MathF.Floor( cursorCellY - (itemHeightInCells - 1) / 2f );
+
+		targetX = Math.Clamp( targetX, 0, Inventory.Width - itemWidthInCells );
+		targetY = Math.Clamp( targetY, 0, Inventory.Height - itemHeightInCells );
+
+		DragPreviewX = targetX;
+		DragPreviewY = targetY;
+
+		// Check if the cursor is within grid bounds
+		var isInGridBounds = gridLocalX >= GridPadding && 
+			gridLocalX <= GridPadding + Inventory.Width * CellTotal - CellGap &&
+			gridLocalY >= GridPadding &&
+			gridLocalY <= GridPadding + Inventory.Height * CellTotal - CellGap;
+
+		if ( !isInGridBounds )
+		{
+			CanDropAtCurrentPosition = false;
+		}
+		else if ( IsSplitting )
+		{
+			// When splitting, we can drop on empty spaces or stackable items
+			var itemsAtTarget = Inventory.GetItemsInRect( targetX, targetY, itemWidthInCells, itemHeightInCells );
+			itemsAtTarget.Remove( DraggedItem );
+
+			if ( itemsAtTarget.Count == 0 )
+			{
+				CanDropAtCurrentPosition = Inventory.CanPlaceItemAt( DraggedItem, targetX, targetY, DraggedItem );
+			}
+			else if ( itemsAtTarget.Count == 1 )
+			{
+				var targetItem = itemsAtTarget[0];
+				CanDropAtCurrentPosition = DraggedItem.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0;
+			}
+			else
+			{
+				CanDropAtCurrentPosition = false;
+			}
+		}
+		else
+		{
+			// Check if we can move to empty space
+			var itemsAtTarget = Inventory.GetItemsInRect( targetX, targetY, itemWidthInCells, itemHeightInCells );
+			itemsAtTarget.Remove( DraggedItem );
+
+			if ( itemsAtTarget.Count == 0 )
+			{
+				CanDropAtCurrentPosition = Inventory.CanPlaceItemAt( DraggedItem, targetX, targetY, DraggedItem );
+			}
+			else if ( itemsAtTarget.Count == 1 )
+			{
+				var targetItem = itemsAtTarget[0];
+
+				// Check for stacking first
+				if ( DraggedItem.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
+				{
+					CanDropAtCurrentPosition = true;
+				}
+				else
+				{
+					// Just use the built-in CanMoveOrSwap logic
+					CanDropAtCurrentPosition = Inventory.CanMoveOrSwap( DraggedItem, targetX, targetY );
+				}
+			}
+			else
+			{
+				CanDropAtCurrentPosition = false;
+			}
+		}
+
+		StateHasChanged();
+	}
+
+	protected override void OnMouseUp( MousePanelEvent e )
+	{
+		base.OnMouseUp( e );
+
+		if ( DraggedItem is null )
+			return;
+
+		if ( IsDragging )
+		{
+			TryDropItem();
+		}
+
+		DraggedItem = null;
+		IsDragging = false;
+		IsSplitting = false;
+		StateHasChanged();
+	}
+
+	private void TryDropItem()
+	{
+		if ( DraggedItem is null || Inventory is null )
+			return;
+
+		var targetX = DragPreviewX;
+		var targetY = DragPreviewY;
+
+		if ( targetX == DragStartSlot.X && targetY == DragStartSlot.Y )
+			return;
+
+		if ( !CanDropAtCurrentPosition )
+			return;
+
+		if ( IsSplitting )
+		{
+			var splitAmount = DraggedItem.StackCount / 2;
+			if ( splitAmount <= 0 )
+				return;
+
+			var itemsAtTarget = Inventory.GetItemsInRect( targetX, targetY, DraggedItem.Width, DraggedItem.Height );
+			itemsAtTarget.Remove( DraggedItem );
+
+			if ( itemsAtTarget.Count == 1 )
+			{
+				var targetItem = itemsAtTarget[0];
+				if ( DraggedItem.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
+				{
+					var amountToMove = Math.Min( splitAmount, targetItem.SpaceLeftInStack() );
+					_ = Inventory.Network.TryCombineStacks( DraggedItem, targetItem, amountToMove );
+					return;
+				}
+			}
+
+			var slot = new InventorySlot( targetX, targetY, DraggedItem.Width, DraggedItem.Height );
+			_ = Inventory.Network.TryTakeAndPlace( DraggedItem, splitAmount, slot );
+		}
+		else
+		{
+			_ = Inventory.Network.TryMoveOrSwap( DraggedItem, targetX, targetY );
+		}
+	}
+
+	public override void OnDeleted()
+	{
+		if ( Inventory is not null )
+		{
+			Inventory.OnInventoryChanged -= StateHasChanged;
+		}
+
+		base.OnDeleted();
+	}
+}
