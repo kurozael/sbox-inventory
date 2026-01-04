@@ -354,12 +354,10 @@ public class WeaponItem : InventoryItem
     public int Durability { get; set; } = 100;
     public string Enchantment { get; set; }
 
-    public override Dictionary<string, object> SerializeMetadata()
+    public override void SerializeMetadata( Dictionary<string, object> data )
     {
-        var data = base.SerializeMetadata();
         data["Durability"] = Durability;
         data["Enchantment"] = Enchantment;
-        return data;
     }
 
     public override void DeserializeNetworkData( Dictionary<string, object> data )
@@ -368,6 +366,7 @@ public class WeaponItem : InventoryItem
         
         if ( data.TryGetValue( "Durability", out var dur ) )
             Durability = (int)dur;
+
         if ( data.TryGetValue( "Enchantment", out var ench ) )
             Enchantment = (string)ench;
     }
