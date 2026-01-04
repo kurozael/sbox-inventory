@@ -1,4 +1,4 @@
-# s&box Inventory
+# Tetris Inventory
 
 A flexible, networked, grid-based inventory system for s&box featuring Tetris-style item placement, stacking, and automatic synchronization across clients.
 

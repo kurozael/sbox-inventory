@@ -1,14 +1,7 @@
 {
-  "Title": "Inventory",
+  "Title": "Tetris Inventory",
   "Type": "library",
   "Org": "conna",
   "Ident": "inventory",
-  "Schema": 1,
-  "IncludeSourceFiles": false,
-  "Resources": null,
-  "PackageReferences": [],
-  "EditorReferences": null,
-  "Mounts": null,
-  "IsStandaloneOnly": false,
-  "Metadata": {}
+  "Schema": 1
 }
