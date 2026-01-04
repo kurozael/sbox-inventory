@@ -1,4 +1,4 @@
-﻿namespace Sandbox.Inventory;
+﻿namespace Conna.Inventory;
 
 /// <summary>
 /// Where an item lives inside an inventory.

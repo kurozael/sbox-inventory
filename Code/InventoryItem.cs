@@ -1,7 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace Sandbox.Inventory;
+
+namespace Conna.Inventory;
 
 /// <summary>
 /// Base class for inventory items. Inherit this for your actual game items.

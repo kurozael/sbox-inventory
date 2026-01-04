@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Sandbox;
 
-namespace Sandbox.Inventory;
+namespace Conna.Inventory;
 
 /// <summary>
 /// Network accessor for inventory operations. Automatically routes through the host.

@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Sandbox;
 
-namespace Sandbox.Inventory;
+namespace Conna.Inventory;
 
 /// <summary>
 /// Base grid inventory with tetris-style packing and stacking. Inherit to implement special rules.

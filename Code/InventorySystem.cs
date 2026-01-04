@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
+using Sandbox;
 
-namespace Sandbox.Inventory;
+namespace Conna.Inventory;
 
 /// <summary>
 /// A <see cref="GameObjectSystem"/> that contains all registered inventories.

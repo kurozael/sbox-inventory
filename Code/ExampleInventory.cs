@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace Sandbox.Inventory;
+namespace Conna.Inventory;
 
 /// <summary>
 /// An example inventory class.

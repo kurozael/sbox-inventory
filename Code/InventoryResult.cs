@@ -1,4 +1,4 @@
-﻿namespace Sandbox.Inventory;
+﻿namespace Conna.Inventory;
 
 public enum InventoryResult
 {
