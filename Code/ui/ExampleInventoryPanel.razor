@@ -1,6 +1,7 @@
 @using System
 @using Sandbox
 @using Sandbox.UI
+@using System.Threading.Tasks
 @inherits Panel
 @namespace Conna.Inventory
 
@@ -120,7 +121,7 @@
 		}
 	}
 
-	private async void OnAutoSortClicked()
+	private async Task OnAutoSortClicked()
 	{
 		if ( Inventory is null )
 			return;
@@ -128,7 +129,7 @@
 		await Inventory.Network.AutoSort();
 	}
 
-	private async void OnConsolidateClicked()
+	private async Task OnConsolidateClicked()
 	{
 		if ( Inventory is null )
 			return;

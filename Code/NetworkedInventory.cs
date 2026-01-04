@@ -135,6 +135,9 @@ public class NetworkedInventory
 		if ( !_baseInventory.HasAuthority )
 			return;
 
+		var metadata = new Dictionary<string, object>();
+		entry.Item.SerializeMetadata( metadata );
+
 		var serialized = new SerializedEntry(
 			entry.Item.Id,
 			entry.Item.GetType().FullName,
@@ -142,7 +145,7 @@ public class NetworkedInventory
 			entry.Slot.Y,
 			entry.Slot.W,
 			entry.Slot.H,
-			entry.Item.SerializeMetadata()
+			metadata
 		);
 
 		var message = new InventoryItemAdded( serialized );
@@ -172,7 +175,10 @@ public class NetworkedInventory
 		if ( !_baseInventory.HasAuthority )
 			return;
 
-		var message = new InventoryItemDataChanged( item.Id, item.SerializeMetadata() );
+		var metadata = new Dictionary<string, object>();
+		item.SerializeMetadata( metadata );
+
+		var message = new InventoryItemDataChanged( item.Id, metadata );
 		BroadcastToAll( message );
 	}
 
@@ -181,15 +187,21 @@ public class NetworkedInventory
 		if ( !Connection.Local.IsHost )
 			return;
 
-		var entries = _baseInventory.Entries.Select( e => new SerializedEntry(
-			e.Item.Id,
-			e.Item.GetType().FullName,
-			e.Slot.X,
-			e.Slot.Y,
-			e.Slot.W,
-			e.Slot.H,
-			e.Item.SerializeMetadata()
-		) ).ToList();
+		var entries = _baseInventory.Entries.Select( e =>
+		{
+			var metadata = new Dictionary<string, object>();
+			e.Item.SerializeMetadata( metadata );
+
+			return new SerializedEntry(
+				e.Item.Id,
+				e.Item.GetType().FullName,
+				e.Slot.X,
+				e.Slot.Y,
+				e.Slot.W,
+				e.Slot.H,
+				metadata
+			);
+		} ).ToList();
 
 		var typeId = TypeLibrary.GetType( _baseInventory.GetType() ).Identity;
 		var message = new InventoryStateSync( typeId, _baseInventory.Width, _baseInventory.Height, entries );
@@ -291,7 +303,8 @@ public class NetworkedInventory
 		if ( item == null ) return;
 
 		item.Id = entry.ItemId;
-		item.DeserializeNetworkData( entry.Data );
+		item.DeserializeMetadata( entry.Data );
+		item.ClearDirty();
 
 		baseInventory.ExecuteWithoutAuthority( () =>
 		{
@@ -334,7 +347,7 @@ public class NetworkedInventory
 		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
 		if ( item == null ) return;
 
-		item.DeserializeNetworkData( msg.Data );
+		item.DeserializeMetadata( msg.Data );
 		item.ClearDirty();
 	}
 
@@ -355,7 +368,9 @@ public class NetworkedInventory
 				if ( item == null ) continue;
 
 				item.Id = entry.ItemId;
-				item.DeserializeNetworkData( entry.Data );
+				item.DeserializeMetadata( entry.Data );
+				item.ClearDirty();
+
 				baseInventory.TryAddAt( item, entry.X, entry.Y );
 			}
 		});

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 
 namespace Conna.Inventory;
@@ -59,25 +60,20 @@ public abstract class InventoryItem
 	/// Override to serialize custom item data for networking.
 	/// Called when an item is dirty or needs full sync.
 	/// </summary>
-	public virtual Dictionary<string, object> SerializeMetadata()
+	public virtual void SerializeMetadata( Dictionary<string, object> data )
 	{
-		return new Dictionary<string, object>
-		{
-			["StackCount"] = StackCount
-		};
+		data["StackCount"] = StackCount;
 	}
 
 	/// <summary>
 	/// Override to deserialize custom item data from network.
 	/// </summary>
-	public virtual void DeserializeNetworkData( Dictionary<string, object> data )
+	public virtual void DeserializeMetadata( Dictionary<string, object> data )
 	{
 		if ( data.TryGetValue( "StackCount", out var stackCount ) )
 		{
 			StackCount = (int)stackCount;
 		}
-
-		ClearDirty();
 	}
 
 	/// <summary>
