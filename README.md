@@ -82,7 +82,7 @@ public class Player : Component
         Inventory = new PlayerInventory( Id );
         
         // Enable networking for multiplayer sync
-        Inventory.EnableNetworking();
+        Inventory.Network.Enabled = true;
     }
 }
 ```
@@ -162,7 +162,7 @@ bool canMoveOrSwap = inventory.CanMoveOrSwap( item, x: 5, y: 2 );
 
 ```csharp
 var ammo = new AmmoItem();
-ammo.SetStackCount( 32 ); // Must be between 1 and MaxStackSize
+ammo.StackCount = 32; // Automatically clamped between 0 and MaxStackSize
 inventory.TryAdd( ammo );
 ```
 
@@ -277,7 +277,13 @@ The inventory system uses a host-authoritative model. Clients send requests to t
 ### Enabling Networking
 
 ```csharp
-inventory.EnableNetworking();
+inventory.Network.Enabled = true;
+```
+
+### Disabling Networking
+
+```csharp
+inventory.Network.Enabled = false;
 ```
 
 ### Subscribing Clients
@@ -322,6 +328,12 @@ else
     // Must use Network accessor
     await inventory.Network.TryMoveOrSwap( item, x, y );
 }
+
+// Check if networking is enabled
+if ( inventory.IsNetworked )
+{
+    // Inventory is being synced across the network
+}
 ```
 
 ---
@@ -346,7 +358,27 @@ inventory.OnInventoryChanged += () =>
 
 ## Custom Item Data
 
-Override serialization methods to sync custom item properties:
+Use the `[Networked]` attribute on properties to automatically sync them across the network. Properties with this attribute will be serialized and broadcast to all subscribers when changed on the host.
+
+```csharp
+public class WeaponItem : InventoryItem
+{
+    [Networked]
+    public int Durability { get; set; } = 100;
+    
+    [Networked]
+    public string Enchantment { get; set; }
+
+    // Changes to [Networked] properties on the host are automatically 
+    // synced to all subscribers
+    public void TakeDamage( int amount )
+    {
+        Durability -= amount;
+    }
+}
+```
+
+For custom serialization logic, override the `Serialize` and `Deserialize` methods:
 
 ```csharp
 public class WeaponItem : InventoryItem
@@ -354,28 +386,22 @@ public class WeaponItem : InventoryItem
     public int Durability { get; set; } = 100;
     public string Enchantment { get; set; }
 
-    public override void SerializeMetadata( Dictionary<string, object> data )
+    public override void Serialize( Dictionary<string, object> data )
     {
+        base.Serialize( data ); // Include base [Networked] properties
         data["Durability"] = Durability;
         data["Enchantment"] = Enchantment;
     }
 
-    public override void DeserializeNetworkData( Dictionary<string, object> data )
+    public override void Deserialize( Dictionary<string, object> data )
     {
-        base.DeserializeNetworkData( data );
+        base.Deserialize( data );
         
         if ( data.TryGetValue( "Durability", out var dur ) )
             Durability = (int)dur;
 
         if ( data.TryGetValue( "Enchantment", out var ench ) )
             Enchantment = (string)ench;
-    }
-
-    // Mark dirty when properties change to trigger network sync
-    public void TakeDamage( int amount )
-    {
-        Durability -= amount;
-        MarkDirty();
     }
 }
 ```
@@ -442,6 +468,12 @@ public class WeaponOnlyInventory : BaseInventory
         if ( y == 0 && item is not PrimaryWeaponItem )
             return false;
         return true;
+    }
+    
+    // Custom stacking rules
+    protected override bool CanStack( InventoryItem a, InventoryItem b )
+    {
+        return a.CanStackWith( b );
     }
 }
 ```
@@ -580,7 +612,7 @@ private async void OnDrop()
 
 3. **Subscribe players appropriately**: Only subscribe connections that need real-time updates.
 
-4. **Call MarkDirty()**: When modifying custom item properties, call `MarkDirty()` to trigger network sync.
+4. **Use [Networked] attribute**: Mark properties that need to sync with `[Networked]` for automatic synchronization.
 
 5. **Dispose inventories**: Call `Dispose()` when the inventory owner is destroyed to unregister from the system.
 
@@ -603,7 +635,7 @@ public class LootContainer : Component, IInteractable
     protected override void OnAwake()
     {
         Inventory = new ContainerInventory( Id );
-        Inventory.EnableNetworking();
+        Inventory.Network.Enabled = true;
         
         // Spawn random loot
         if ( Networking.IsHost )
