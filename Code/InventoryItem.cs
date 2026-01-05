@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using Sandbox;
 
 namespace Conna.Inventory;
 
@@ -8,7 +10,31 @@ namespace Conna.Inventory;
 /// </summary>
 public abstract class InventoryItem
 {
+	private static void OnNetworkedPropertySet<T>( WrappedPropertySet<T> property )
+	{
+		var oldValue = property.Getter();
+
+		if ( Equals( property.Value, oldValue ) )
+			return;
+
+		if ( Connection.Local.IsHost && property.Object is InventoryItem { Inventory: not null } item )
+		{
+			InventorySystem.Current?.MarkDirty( item.Inventory );
+			item.DirtyProperties.Add( property.MemberIdent );
+		}
+
+		property.Setter( property.Value );
+	}
+
+	/// <summary>
+	/// Unique identifier for this item.
+	/// </summary>
 	public Guid Id { get; internal set; } = Guid.NewGuid();
+
+	/// <summary>
+	/// The inventory that this item belongs to.
+	/// </summary>
+	public BaseInventory Inventory { get; internal set; }
 
 	/// <summary>
 	/// Size in cells. Override for non-1x1 items.
@@ -22,55 +48,56 @@ public abstract class InventoryItem
 	/// </summary>
 	public virtual int MaxStackSize => 1;
 
+	private int _stackCount = 1;
+
 	/// <summary>
 	/// Current number of items in the stack.
 	/// </summary>
+	[Networked]
 	public int StackCount
 	{
-		get;
-		private set
+		get => _stackCount;
+		set
 		{
-			if ( field == value )
-				return;
-
-			field = value;
-			MarkDirty();
+			_stackCount = Math.Clamp( value, 0, MaxStackSize );
 		}
-	} = 1;
+	}
 
 	public virtual string DisplayName => GetType().Name;
 	public virtual string Category => "Default";
 
-	// Dirty tracking for networking
-	internal bool IsDirty { get; private set; }
-
-	protected void MarkDirty()
-	{
-		IsDirty = true;
-	}
-
-	internal void ClearDirty()
-	{
-		IsDirty = false;
-	}
+	/// <summary>
+	/// A set of dirty networked properties that should be sent to all subscribers of the
+	/// <see cref="BaseInventory"/> that this <see cref="InventoryItem"/> belongs to.
+	/// </summary>
+	internal readonly HashSet<int> DirtyProperties = [];
 
 	/// <summary>
-	/// Override to serialize custom item data for networking.
-	/// Called when an item is dirty or needs full sync.
+	/// Override to serialize the item for networking.
 	/// </summary>
-	public virtual void SerializeMetadata( Dictionary<string, object> data )
+	public virtual void Serialize( Dictionary<string, object> data )
 	{
-		data["StackCount"] = StackCount;
-	}
+		var typeDescription = TypeLibrary.GetType( GetType() );
 
-	/// <summary>
-	/// Override to deserialize custom item data from network.
-	/// </summary>
-	public virtual void DeserializeMetadata( Dictionary<string, object> data )
-	{
-		if ( data.TryGetValue( "StackCount", out var stackCount ) )
+		foreach ( var property in typeDescription.Properties.Where( p => p.HasAttribute<NetworkedAttribute>() ) )
 		{
-			StackCount = (int)stackCount;
+			data[property.Name] = property.GetValue( this );
+		}
+	}
+
+	/// <summary>
+	/// Override to deserialize an item for networking.
+	/// </summary>
+	public virtual void Deserialize( Dictionary<string, object> data )
+	{
+		var typeDescription = TypeLibrary.GetType( GetType() );
+
+		foreach ( var property in typeDescription.Properties.Where( p => p.HasAttribute<NetworkedAttribute>() ) )
+		{
+			if ( data.TryGetValue( property.Name, out var value ) )
+			{
+				property.SetValue( this, value );
+			}
 		}
 	}
 
@@ -93,26 +120,13 @@ public abstract class InventoryItem
 	public virtual InventoryItem CreateStackClone( int stackCount )
 	{
 		var description = TypeLibrary.GetType( GetType() );
-		var obj = description.Create<InventoryItem>();
-		obj.SetStackCount( stackCount );
-		return obj;
+		var clone = description.Create<InventoryItem>();
+		clone.StackCount = stackCount;
+		return clone;
 	}
 
 	public virtual void OnAdded( BaseInventory baseInventory ) { }
 	public virtual void OnRemoved( BaseInventory baseInventory ) { }
 
-	public void SetStackCount( int value )
-	{
-		ArgumentOutOfRangeException.ThrowIfLessThan( value, 1 );
-
-		if ( value > MaxStackSize )
-			throw new ArgumentOutOfRangeException( nameof( value ), $"StackCount cannot exceed MaxStackSize ({MaxStackSize})." );
-
-		StackCount = value;
-	}
-
 	public int SpaceLeftInStack() => Math.Max( 0, MaxStackSize - StackCount );
-
-	internal void AddToStackUnsafe( int amount ) => StackCount += amount;
-	internal void RemoveFromStackUnsafe( int amount ) => StackCount -= amount;
 }

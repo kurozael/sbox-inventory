@@ -12,7 +12,14 @@ public abstract class BaseInventory : IDisposable
 {
 	public readonly record struct Entry( InventoryItem Item, InventorySlot Slot );
 
+	/// <summary>
+	///	The width of the inventory in grid cells.
+	/// </summary>
 	public int Width { get; }
+
+	/// <summary>
+	/// The height of the inventory in grid cells.
+	/// </summary>
 	public int Height { get; }
 
 	private bool _bypassAuthorityCheck;
@@ -22,20 +29,22 @@ public abstract class BaseInventory : IDisposable
 
 	public IReadOnlyCollection<Entry> Entries => _entries.Values;
 
+	/// <summary>
+	/// Unique identifier of the inventory.
+	/// </summary>
 	public Guid InventoryId { get; }
-	public bool IsNetworked { get; private set; }
-	public NetworkedInventory Network { get; private set; }
-
-	private readonly HashSet<Guid> _subscribers = [];
 
 	/// <summary>
-	/// Enable networking for this inventory.
+	/// Returns true if the inventory is currently being synced across the network.
 	/// </summary>
-	public void EnableNetworking()
-	{
-		InventorySystem.Current?.Register( this );
-		IsNetworked = true;
-	}
+	public bool IsNetworked => Network.Enabled;
+
+	/// <summary>
+	/// Access to the networked inventory. You can make networked changes to the inventory using this object.
+	/// </summary>
+	public NetworkedInventory Network { get; }
+
+	private readonly HashSet<Guid> _subscribers = [];
 
 	/// <summary>
 	/// Check if we can modify this inventory directly.
@@ -60,6 +69,10 @@ public abstract class BaseInventory : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// Adds a new subscriber to the inventory using the provided connection identifier. If the inventory is networked, has authority, and
+	/// the connection is not the local one, it sends the full state of the inventory to the specified subscriber.
+	/// </summary>
 	public void AddSubscriber( Guid connectionId )
 	{
 		if ( !_subscribers.Add( connectionId ) )
@@ -71,6 +84,9 @@ public abstract class BaseInventory : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// Removes a subscriber from the inventory.
+	/// </summary>
 	public void RemoveSubscriber( Guid connectionId )
 	{
 		_subscribers.Remove( connectionId );
@@ -78,10 +94,25 @@ public abstract class BaseInventory : IDisposable
 
 	public IReadOnlySet<Guid> Subscribers => _subscribers;
 
-	public event Action<Entry> OnItemAdded;
-	public event Action<Entry> OnItemRemoved;
-	public event Action OnInventoryChanged;
-	public event Action<InventoryItem, int, int> OnItemMoved;
+	/// <summary>
+	/// Called when an item is added to the inventory.
+	/// </summary>
+	public Action<Entry> OnItemAdded;
+
+	/// <summary>
+	/// Called when an item is removed from the inventory.
+	/// </summary>
+	public Action<Entry> OnItemRemoved;
+
+	/// <summary>
+	/// Called when the inventory is changed in some way.
+	/// </summary>
+	public Action OnInventoryChanged;
+
+	/// <summary>
+	/// Called when an item is moved within the inventory.
+	/// </summary>
+	public Action<InventoryItem, int, int> OnItemMoved;
 
 	protected BaseInventory( Guid id, int width, int height )
 	{
@@ -107,6 +138,9 @@ public abstract class BaseInventory : IDisposable
 
 	public bool Contains( InventoryItem item ) => item is not null && _entries.ContainsKey( item.Id );
 
+	/// <summary>
+	/// Attempts to retrieve the inventory slot associated with the specified inventory item.
+	/// </summary>
 	public bool TryGetSlot( InventoryItem item, out InventorySlot slot )
 	{
 		slot = default;
@@ -122,6 +156,10 @@ public abstract class BaseInventory : IDisposable
 
 	}
 
+	/// <summary>
+	/// Retrieves the inventory item located at the specified grid coordinates within the inventory.
+	/// If no item is found at the given coordinates, the method returns null.
+	/// </summary>
 	public InventoryItem GetItemAt( int x, int y )
 	{
 		foreach ( var (inventoryItem, slot) in _entries.Values )
@@ -133,6 +171,9 @@ public abstract class BaseInventory : IDisposable
 		return null;
 	}
 
+	/// <summary>
+	/// Retrieves all inventory items within the specified rectangular area.
+	/// </summary>
 	public List<InventoryItem> GetItemsInRect( int x, int y, int w, int h )
 	{
 		var result = new List<InventoryItem>();
@@ -168,20 +209,20 @@ public abstract class BaseInventory : IDisposable
 				if ( i == j )
 					continue;
 
-				var destItem = allItems[j];
-				if ( !Contains( destItem ) )
+				var destinationItem = allItems[j];
+				if ( !Contains( destinationItem ) )
 					continue;
 
-				if ( !CanStack( destItem, sourceItem ) )
+				if ( !CanStack( destinationItem, sourceItem ) )
 					continue;
 
-				var spaceLeft = destItem.SpaceLeftInStack();
+				var spaceLeft = destinationItem.SpaceLeftInStack();
 				if ( spaceLeft <= 0 )
 					continue;
 
 				var amountToMove = Math.Min( sourceItem.StackCount, spaceLeft );
-				destItem.AddToStackUnsafe( amountToMove );
-				sourceItem.RemoveFromStackUnsafe( amountToMove );
+				destinationItem.StackCount += amountToMove;
+				sourceItem.StackCount -= amountToMove;
 
 				if ( sourceItem.StackCount > 0 )
 					continue;
@@ -344,7 +385,7 @@ public abstract class BaseInventory : IDisposable
 			else
 			{
 				toPlace = item.CreateStackClone( placeCount );
-				item.RemoveFromStackUnsafe( placeCount );
+				item.StackCount -= placeCount;
 			}
 
 			if ( !TryFindPlacement( toPlace, out var slot ) )
@@ -396,6 +437,9 @@ public abstract class BaseInventory : IDisposable
 
 		ClearRect( entry.Slot.X, entry.Slot.Y, entry.Slot.W, entry.Slot.H );
 		_entries.Remove( item.Id );
+
+		item.Inventory = null;
+		item.DirtyProperties.Clear();
 
 		item.OnRemoved( this );
 		OnItemRemoved?.Invoke( entry );
@@ -555,8 +599,8 @@ public abstract class BaseInventory : IDisposable
 
 		item.OnRemoved( this );
 		OnItemRemoved?.Invoke( sourceEntry );
-		OnInventoryChangedInternal();
 
+		OnInventoryChangedInternal();
 		return InventoryResult.Success;
 	}
 
@@ -613,6 +657,7 @@ public abstract class BaseInventory : IDisposable
 
 		item.OnRemoved( this );
 		OnItemRemoved?.Invoke( sourceEntry );
+
 		OnInventoryChangedInternal();
 
 		return InventoryResult.Success;
@@ -839,7 +884,7 @@ public abstract class BaseInventory : IDisposable
 			return InventoryResult.ItemNotStackable;
 
 		taken = item.CreateStackClone( amount );
-		item.RemoveFromStackUnsafe( amount );
+		item.StackCount -= amount;
 
 		OnInventoryChangedInternal();
 		return InventoryResult.Success;
@@ -970,8 +1015,8 @@ public abstract class BaseInventory : IDisposable
 
 		amount = amount <= 0 ? maxMove : Math.Min( amount, maxMove );
 
-		destination.AddToStackUnsafe( amount );
-		source.RemoveFromStackUnsafe( amount );
+		destination.StackCount += amount;
+		source.StackCount -= amount;
 		moved = amount;
 
 		if ( source.StackCount <= 0 )
@@ -1019,8 +1064,8 @@ public abstract class BaseInventory : IDisposable
 
 		amount = amount <= 0 ? maxMove : Math.Min( amount, maxMove );
 
-		destination.AddToStackUnsafe( amount );
-		source.RemoveFromStackUnsafe( amount );
+		destination.StackCount += amount;
+		source.StackCount -= amount;
 		moved = amount;
 
 		if ( source.StackCount <= 0 )
@@ -1083,19 +1128,6 @@ public abstract class BaseInventory : IDisposable
 	private void OnInventoryChangedInternal()
 	{
 		OnInventoryChanged?.Invoke();
-
-		if ( !IsNetworked || !HasAuthority )
-			return;
-
-		// If networked, check for dirty items and broadcast updates
-		foreach ( var (inventoryItem, _) in _entries.Values )
-		{
-			if ( !inventoryItem.IsDirty )
-				continue;
-
-			Network.BroadcastItemDataChanged( inventoryItem );
-			inventoryItem.ClearDirty();
-		}
 	}
 
 	private void MergeIntoExistingStacks( InventoryItem incoming )
@@ -1111,13 +1143,13 @@ public abstract class BaseInventory : IDisposable
 			if ( incoming.StackCount <= 0 )
 				return;
 
-			var dst = candidate.Item;
-			var move = Math.Min( incoming.StackCount, dst.SpaceLeftInStack() );
+			var destination = candidate.Item;
+			var move = Math.Min( incoming.StackCount, destination.SpaceLeftInStack() );
 			if ( move <= 0 )
 				continue;
 
-			dst.AddToStackUnsafe( move );
-			incoming.RemoveFromStackUnsafe( move );
+			destination.StackCount += move;
+			incoming.StackCount -= move;
 			OnInventoryChangedInternal();
 		}
 	}
@@ -1136,6 +1168,9 @@ public abstract class BaseInventory : IDisposable
 		FillRect( slot.X, slot.Y, slot.W, slot.H );
 		_entries.Add( item.Id, new Entry( item, slot ) );
 
+		item.Inventory = this;
+		item.DirtyProperties.Clear();
+
 		item.OnAdded( this );
 		OnItemAdded?.Invoke( new Entry( item, slot ) );
 
@@ -1143,7 +1178,6 @@ public abstract class BaseInventory : IDisposable
 			Network.BroadcastItemAdded( new Entry( item, slot ) );
 
 		OnInventoryChangedInternal();
-
 		return InventoryResult.Success;
 	}
 
@@ -1153,7 +1187,7 @@ public abstract class BaseInventory : IDisposable
 
 		if ( Contains( original ) )
 		{
-			original.AddToStackUnsafe( taken.StackCount );
+			original.StackCount += taken.StackCount;
 			OnInventoryChangedInternal();
 		}
 		else

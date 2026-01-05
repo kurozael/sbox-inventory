@@ -15,6 +15,24 @@ public class NetworkedInventory
 	private readonly Dictionary<Guid, TaskCompletionSource<InventoryResult>> _pendingRequests = new();
 	private const int RequestTimeoutMs = 5000;
 
+	/// <summary>
+	/// Whether networking is enabled on this inventory. If networking is enabled, synchronization
+	/// of the inventory is routed through the host. The host has authority over the inventory.
+	/// </summary>
+	public bool Enabled
+	{
+		get;
+		set
+		{
+			if ( value )
+				InventorySystem.Current?.Register( _baseInventory );
+			else
+				InventorySystem.Current?.Unregister( _baseInventory );
+
+			field = value;
+		}
+	}
+
 	internal NetworkedInventory( BaseInventory baseInventory )
 	{
 		_baseInventory = baseInventory;
@@ -123,7 +141,7 @@ public class NetworkedInventory
 
 	internal void BroadcastClearAll()
 	{
-		if ( !_baseInventory.HasAuthority )
+		if ( !Connection.Local.IsHost )
 			return;
 
 		var message = new InventoryClearAll( );
@@ -132,11 +150,11 @@ public class NetworkedInventory
 
 	internal void BroadcastItemAdded( BaseInventory.Entry entry )
 	{
-		if ( !_baseInventory.HasAuthority )
+		if ( !Connection.Local.IsHost )
 			return;
 
 		var metadata = new Dictionary<string, object>();
-		entry.Item.SerializeMetadata( metadata );
+		entry.Item.Serialize( metadata );
 
 		var serialized = new SerializedEntry(
 			entry.Item.Id,
@@ -154,7 +172,7 @@ public class NetworkedInventory
 
 	internal void BroadcastItemRemoved( Guid itemId )
 	{
-		if ( !_baseInventory.HasAuthority )
+		if ( !Connection.Local.IsHost )
 			return;
 
 		var message = new InventoryItemRemoved( itemId );
@@ -163,23 +181,25 @@ public class NetworkedInventory
 
 	internal void BroadcastItemMoved( Guid itemId, int x, int y )
 	{
-		if ( !_baseInventory.HasAuthority )
+		if ( !Connection.Local.IsHost )
 			return;
 
 		var message = new InventoryItemMoved( itemId, x, y );
 		BroadcastToAll( message );
 	}
 
-	internal void BroadcastItemDataChanged( InventoryItem item )
+	internal void SendItemDataChangedList( IEnumerable<Guid> connections, InventoryItemDataChangedList list )
 	{
-		if ( !_baseInventory.HasAuthority )
+		if ( !Connection.Local.IsHost )
 			return;
 
-		var metadata = new Dictionary<string, object>();
-		item.SerializeMetadata( metadata );
+		foreach ( var connection in connections )
+		{
+			if ( Connection.Local.Id == connection )
+				continue;
 
-		var message = new InventoryItemDataChanged( item.Id, metadata );
-		BroadcastToAll( message );
+			SendToConnection( connection, list );
+		}
 	}
 
 	public void SendFullStateTo( Guid connectionId )
@@ -190,7 +210,7 @@ public class NetworkedInventory
 		var entries = _baseInventory.Entries.Select( e =>
 		{
 			var metadata = new Dictionary<string, object>();
-			e.Item.SerializeMetadata( metadata );
+			e.Item.Serialize( metadata );
 
 			return new SerializedEntry(
 				e.Item.Id,
@@ -264,6 +284,7 @@ public class NetworkedInventory
 			{
 				var typeDescription = TypeLibrary.GetTypeByIdent( sync.TypeId );
 				baseInventory = typeDescription.Create<BaseInventory>( [inventoryId, sync.Width, sync.Height] );
+				baseInventory.Network.Enabled = true;
 			}
 		}
 
@@ -281,8 +302,8 @@ public class NetworkedInventory
 				HandleItemMoved( baseInventory, msg );
 				break;
 
-			case InventoryItemDataChanged msg:
-				HandleItemDataChanged( baseInventory, msg );
+			case InventoryItemDataChangedList msg:
+				HandleItemDataChangedList( baseInventory, msg );
 				break;
 
 			case InventoryStateSync msg:
@@ -303,8 +324,7 @@ public class NetworkedInventory
 		if ( item == null ) return;
 
 		item.Id = entry.ItemId;
-		item.DeserializeMetadata( entry.Data );
-		item.ClearDirty();
+		item.Deserialize( entry.Data );
 
 		baseInventory.ExecuteWithoutAuthority( () =>
 		{
@@ -342,13 +362,15 @@ public class NetworkedInventory
 		});
 	}
 
-	private static void HandleItemDataChanged( BaseInventory baseInventory, InventoryItemDataChanged msg )
+	private static void HandleItemDataChangedList( BaseInventory baseInventory, InventoryItemDataChangedList msg )
 	{
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		if ( item == null ) return;
+		foreach ( var entry in msg.List )
+		{
+			var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == entry.ItemId ).Item;
+			item?.Deserialize( entry.Data );
+		}
 
-		item.DeserializeMetadata( msg.Data );
-		item.ClearDirty();
+		baseInventory.OnInventoryChanged?.Invoke();
 	}
 
 	private static void HandleStateSync( BaseInventory baseInventory, InventoryStateSync msg )
@@ -368,8 +390,7 @@ public class NetworkedInventory
 				if ( item == null ) continue;
 
 				item.Id = entry.ItemId;
-				item.DeserializeMetadata( entry.Data );
-				item.ClearDirty();
+				item.Deserialize( entry.Data );
 
 				baseInventory.TryAddAt( item, entry.X, entry.Y );
 			}
@@ -603,6 +624,16 @@ public struct InventoryItemDataChanged
 	{
 		ItemId = itemId;
 		Data = data;
+	}
+}
+
+public struct InventoryItemDataChangedList
+{
+	public InventoryItemDataChanged[] List;
+
+	public InventoryItemDataChangedList( InventoryItemDataChanged[] list )
+	{
+		List = list;
 	}
 }
 
