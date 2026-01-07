@@ -157,8 +157,7 @@ public class NetworkedInventory
 		entry.Item.Serialize( metadata );
 
 		var serialized = new SerializedEntry(
-			entry.Item.Id,
-			entry.Item.GetType().FullName,
+			entry.Item,
 			entry.Slot.X,
 			entry.Slot.Y,
 			entry.Slot.W,
@@ -212,15 +211,16 @@ public class NetworkedInventory
 			var metadata = new Dictionary<string, object>();
 			e.Item.Serialize( metadata );
 
-			return new SerializedEntry(
-				e.Item.Id,
-				e.Item.GetType().FullName,
+			var entry = new SerializedEntry(
+				e.Item,
 				e.Slot.X,
 				e.Slot.Y,
 				e.Slot.W,
 				e.Slot.H,
 				metadata
 			);
+
+			return entry;
 		} ).ToList();
 
 		var typeId = TypeLibrary.GetType( _baseInventory.GetType() ).Identity;
@@ -319,12 +319,11 @@ public class NetworkedInventory
 	private static void HandleItemAdded( BaseInventory baseInventory, InventoryItemAdded msg )
 	{
 		var entry = msg.Entry;
-		var itemType = TypeLibrary.GetType( entry.ItemType );
-		var item = itemType?.Create<InventoryItem>();
+		var item = entry.CreateItem();
 		if ( item == null ) return;
 
 		item.Id = entry.ItemId;
-		item.Deserialize( entry.Data );
+		item.Deserialize( entry.Metadata );
 
 		baseInventory.ExecuteWithoutAuthority( () =>
 		{
@@ -385,12 +384,11 @@ public class NetworkedInventory
 
 			foreach ( var entry in msg.Entries )
 			{
-				var itemType = TypeLibrary.GetType( entry.ItemType );
-				var item = itemType?.Create<InventoryItem>();
-				if ( item == null ) continue;
+				var item = entry.CreateItem();
+				if ( item == null ) return;
 
 				item.Id = entry.ItemId;
-				item.Deserialize( entry.Data );
+				item.Deserialize( entry.Metadata );
 
 				baseInventory.TryAddAt( item, entry.X, entry.Y );
 			}
@@ -656,21 +654,54 @@ public struct InventoryStateSync
 public struct SerializedEntry
 {
 	public Guid ItemId;
-	public string ItemType;
+	public int[] GenericTypeIds;
+	public int TypeId;
 	public int X;
 	public int Y;
 	public int W;
 	public int H;
-	public Dictionary<string, object> Data;
+	public Dictionary<string, object> Metadata;
 
-	public SerializedEntry( Guid itemId, string itemType, int x, int y, int w, int h, Dictionary<string, object> data )
+	public SerializedEntry( InventoryItem item, int x, int y, int w, int h, Dictionary<string, object> metadata )
 	{
-		ItemId = itemId;
-		ItemType = itemType;
+		var itemType = item.GetType();
+		var typeDescription = TypeLibrary.GetType( itemType );
+
+		if ( typeDescription.IsGenericType )
+		{
+			GenericTypeIds = TypeLibrary.GetGenericArguments( itemType )
+				.Select( t => TypeLibrary.GetType( t ).Identity )
+				.ToArray();
+		}
+
+		ItemId = item.Id;
+		TypeId = typeDescription.Identity;
 		X = x;
 		Y = y;
 		W = w;
 		H = h;
-		Data = data;
+		Metadata = metadata;
+	}
+
+	/// <summary>
+	/// Create an <see cref="InventoryItem"/> from this serialized entry.
+	/// </summary>
+	public InventoryItem CreateItem()
+	{
+		var itemType = TypeLibrary.GetTypeByIdent( TypeId );
+
+		InventoryItem item;
+
+		if ( itemType.IsGenericType )
+		{
+			var genericTypes = GenericTypeIds.Select( id => TypeLibrary.GetTypeByIdent( id ).TargetType ).ToArray();
+			item = itemType.CreateGeneric<InventoryItem>( genericTypes );
+		}
+		else
+		{
+			item = itemType.Create<InventoryItem>();
+		}
+
+		return item;
 	}
 }
