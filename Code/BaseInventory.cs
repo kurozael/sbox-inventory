@@ -22,6 +22,11 @@ public abstract class BaseInventory : IDisposable
 	/// </summary>
 	public int Height { get; }
 
+	/// <summary>
+	/// Determines how items occupy space in this inventory.
+	/// </summary>
+	public InventorySlotMode SlotMode { get; }
+
 	private bool _bypassAuthorityCheck;
 	private readonly int _chunksPerRow;
 	private readonly ulong[] _rowBits;
@@ -114,13 +119,14 @@ public abstract class BaseInventory : IDisposable
 	/// </summary>
 	public Action<InventoryItem, int, int> OnItemMoved;
 
-	protected BaseInventory( Guid id, int width, int height )
+	protected BaseInventory( Guid id, int width, int height, InventorySlotMode slotMode = InventorySlotMode.Tetris )
 	{
 		ArgumentOutOfRangeException.ThrowIfLessThan( width, 1 );
 		ArgumentOutOfRangeException.ThrowIfLessThan( height, 1 );
 
 		Width = width;
 		Height = height;
+		SlotMode = slotMode;
 
 		_chunksPerRow = (width + 63) / 64;
 		_rowBits = new ulong[_chunksPerRow * height];
@@ -128,6 +134,16 @@ public abstract class BaseInventory : IDisposable
 		InventoryId = id;
 		Network = new NetworkedInventory( this );
 	}
+
+	/// <summary>
+	/// Gets the effective width of an item in this inventory based on the slot mode.
+	/// </summary>
+	public int GetEffectiveWidth( InventoryItem item ) => SlotMode == InventorySlotMode.Single ? 1 : item.Width;
+
+	/// <summary>
+	/// Gets the effective height of an item in this inventory based on the slot mode.
+	/// </summary>
+	public int GetEffectiveHeight( InventoryItem item ) => SlotMode == InventorySlotMode.Single ? 1 : item.Height;
 
 	protected virtual bool CanInsertItem( InventoryItem item ) => true;
 	protected virtual bool CanRemoveItem( InventoryItem item ) => true;
@@ -244,13 +260,16 @@ public abstract class BaseInventory : IDisposable
 		if ( item is null )
 			return false;
 
-		if ( !IsInBounds( x, y, item.Width, item.Height ) )
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		if ( !IsInBounds( x, y, effectiveW, effectiveH ) )
 			return false;
 
-		if ( !CanPlaceAt( item, x, y, item.Width, item.Height ) )
+		if ( !CanPlaceAt( item, x, y, effectiveW, effectiveH ) )
 			return false;
 
-		var itemsAtTarget = GetItemsInRect( x, y, item.Width, item.Height );
+		var itemsAtTarget = GetItemsInRect( x, y, effectiveW, effectiveH );
 
 		foreach ( var exclude in excludeFromCollision )
 			itemsAtTarget.Remove( exclude );
@@ -269,13 +288,16 @@ public abstract class BaseInventory : IDisposable
 		if ( !_entries.TryGetValue( item.Id, out var entry ) )
 			return false;
 
-		if ( !IsInBounds( x, y, item.Width, item.Height ) )
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		if ( !IsInBounds( x, y, effectiveW, effectiveH ) )
 			return false;
 
-		if ( !CanPlaceAt( item, x, y, item.Width, item.Height ) )
+		if ( !CanPlaceAt( item, x, y, effectiveW, effectiveH ) )
 			return false;
 
-		var itemsAtTarget = GetItemsInRect( x, y, item.Width, item.Height );
+		var itemsAtTarget = GetItemsInRect( x, y, effectiveW, effectiveH );
 		itemsAtTarget.Remove( item );
 
 		if ( itemsAtTarget.Count == 0 )
@@ -308,20 +330,25 @@ public abstract class BaseInventory : IDisposable
 		var slotA = entryA.Slot;
 		var slotB = entryB.Slot;
 
-		if ( !IsInBounds( slotB.X, slotB.Y, itemA.Width, itemA.Height ) )
+		var effectiveWA = GetEffectiveWidth( itemA );
+		var effectiveHA = GetEffectiveHeight( itemA );
+		var effectiveWB = GetEffectiveWidth( itemB );
+		var effectiveHB = GetEffectiveHeight( itemB );
+
+		if ( !IsInBounds( slotB.X, slotB.Y, effectiveWA, effectiveHA ) )
 			return false;
 
-		if ( !IsInBounds( slotA.X, slotA.Y, itemB.Width, itemB.Height ) )
+		if ( !IsInBounds( slotA.X, slotA.Y, effectiveWB, effectiveHB ) )
 			return false;
 
-		if ( !CanPlaceAt( itemA, slotB.X, slotB.Y, itemA.Width, itemA.Height ) )
+		if ( !CanPlaceAt( itemA, slotB.X, slotB.Y, effectiveWA, effectiveHA ) )
 			return false;
 
-		if ( !CanPlaceAt( itemB, slotA.X, slotA.Y, itemB.Width, itemB.Height ) )
+		if ( !CanPlaceAt( itemB, slotA.X, slotA.Y, effectiveWB, effectiveHB ) )
 			return false;
 
-		var newSlotA = new InventorySlot( slotB.X, slotB.Y, itemA.Width, itemA.Height );
-		var newSlotB = new InventorySlot( slotA.X, slotA.Y, itemB.Width, itemB.Height );
+		var newSlotA = new InventorySlot( slotB.X, slotB.Y, effectiveWA, effectiveHA );
+		var newSlotB = new InventorySlot( slotA.X, slotA.Y, effectiveWB, effectiveHB );
 
 		var aOverlapsB = RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
 
@@ -373,6 +400,9 @@ public abstract class BaseInventory : IDisposable
 		if ( item.MaxStackSize > 1 && item.StackCount > 0 )
 			MergeIntoExistingStacks( item );
 
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
 		while ( item.StackCount > 0 )
 		{
 			var placeCount = Math.Min( item.StackCount, item.MaxStackSize );
@@ -417,7 +447,13 @@ public abstract class BaseInventory : IDisposable
 		if ( Contains( item ) )
 			return InventoryResult.ItemAlreadyInInventory;
 
-		return !CanInsertItem( item ) ? InventoryResult.InsertNotAllowed : PlaceItem( item, new InventorySlot( x, y, item.Width, item.Height ) );
+		if ( !CanInsertItem( item ) )
+			return InventoryResult.InsertNotAllowed;
+
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		return PlaceItem( item, new InventorySlot( x, y, effectiveW, effectiveH ) );
 	}
 
 	public InventoryResult TryRemove( InventoryItem item )
@@ -466,23 +502,26 @@ public abstract class BaseInventory : IDisposable
 		if ( !_entries.TryGetValue( item.Id, out var entry ) )
 			return InventoryResult.ItemNotInInventory;
 
-		if ( !IsInBounds( newX, newY, item.Width, item.Height ) )
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		if ( !IsInBounds( newX, newY, effectiveW, effectiveH ) )
 			return InventoryResult.PlacementOutOfBounds;
 
-		if ( !CanPlaceAt( item, newX, newY, item.Width, item.Height ) )
+		if ( !CanPlaceAt( item, newX, newY, effectiveW, effectiveH ) )
 			return InventoryResult.PlacementNotAllowed;
 
 		var oldSlot = entry.Slot;
 		ClearRect( oldSlot.X, oldSlot.Y, oldSlot.W, oldSlot.H );
 
-		if ( !IsRectFree( newX, newY, item.Width, item.Height ) )
+		if ( !IsRectFree( newX, newY, effectiveW, effectiveH ) )
 		{
 			FillRect( oldSlot.X, oldSlot.Y, oldSlot.W, oldSlot.H );
 			return InventoryResult.PlacementCollision;
 		}
 
-		FillRect( newX, newY, item.Width, item.Height );
-		_entries[item.Id] = new Entry( item, new InventorySlot( newX, newY, item.Width, item.Height ) );
+		FillRect( newX, newY, effectiveW, effectiveH );
+		_entries[item.Id] = new Entry( item, new InventorySlot( newX, newY, effectiveW, effectiveH ) );
 
 		OnItemMoved?.Invoke( item, newX, newY );
 
@@ -515,8 +554,13 @@ public abstract class BaseInventory : IDisposable
 		var slotA = entryA.Slot;
 		var slotB = entryB.Slot;
 
-		var newSlotA = new InventorySlot( slotB.X, slotB.Y, itemA.Width, itemA.Height );
-		var newSlotB = new InventorySlot( slotA.X, slotA.Y, itemB.Width, itemB.Height );
+		var effectiveWA = GetEffectiveWidth( itemA );
+		var effectiveHA = GetEffectiveHeight( itemA );
+		var effectiveWB = GetEffectiveWidth( itemB );
+		var effectiveHB = GetEffectiveHeight( itemB );
+
+		var newSlotA = new InventorySlot( slotB.X, slotB.Y, effectiveWA, effectiveHA );
+		var newSlotB = new InventorySlot( slotA.X, slotA.Y, effectiveWB, effectiveHB );
 
 		if ( !IsInBounds( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H ) ||
 		     !IsInBounds( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
@@ -634,20 +678,24 @@ public abstract class BaseInventory : IDisposable
 		if ( !destination.CanInsertItem( item ) )
 			return InventoryResult.InsertNotAllowed;
 
-		if ( !destination.IsInBounds( x, y, item.Width, item.Height ) )
+		// Use destination's effective size for the item
+		var destEffectiveW = destination.GetEffectiveWidth( item );
+		var destEffectiveH = destination.GetEffectiveHeight( item );
+
+		if ( !destination.IsInBounds( x, y, destEffectiveW, destEffectiveH ) )
 			return InventoryResult.PlacementOutOfBounds;
 
-		if ( !destination.CanPlaceAt( item, x, y, item.Width, item.Height ) )
+		if ( !destination.CanPlaceAt( item, x, y, destEffectiveW, destEffectiveH ) )
 			return InventoryResult.PlacementNotAllowed;
 
-		if ( !destination.IsRectFree( x, y, item.Width, item.Height ) )
+		if ( !destination.IsRectFree( x, y, destEffectiveW, destEffectiveH ) )
 			return InventoryResult.PlacementCollision;
 
 		var originalSlot = sourceEntry.Slot;
 		ClearRect( originalSlot.X, originalSlot.Y, originalSlot.W, originalSlot.H );
 		_entries.Remove( item.Id );
 
-		var placeResult = destination.PlaceItem( item, new InventorySlot( x, y, item.Width, item.Height ) );
+		var placeResult = destination.PlaceItem( item, new InventorySlot( x, y, destEffectiveW, destEffectiveH ) );
 		if ( placeResult != InventoryResult.Success )
 		{
 			FillRect( originalSlot.X, originalSlot.Y, originalSlot.W, originalSlot.H );
@@ -706,16 +754,22 @@ public abstract class BaseInventory : IDisposable
 		var slotThis = entryThis.Slot;
 		var slotOther = entryOther.Slot;
 
-		if ( !otherBaseInventory.CanPlaceAt( itemFromThis, slotOther.X, slotOther.Y, itemFromThis.Width, itemFromThis.Height ) )
+		// Calculate effective sizes for each item in each inventory
+		var thisEffectiveWInOther = otherBaseInventory.GetEffectiveWidth( itemFromThis );
+		var thisEffectiveHInOther = otherBaseInventory.GetEffectiveHeight( itemFromThis );
+		var otherEffectiveWInThis = GetEffectiveWidth( itemFromOther );
+		var otherEffectiveHInThis = GetEffectiveHeight( itemFromOther );
+
+		if ( !otherBaseInventory.CanPlaceAt( itemFromThis, slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
 			return InventoryResult.PlacementNotAllowed;
 
-		if ( !CanPlaceAt( itemFromOther, slotThis.X, slotThis.Y, itemFromOther.Width, itemFromOther.Height ) )
+		if ( !CanPlaceAt( itemFromOther, slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) )
 			return InventoryResult.PlacementNotAllowed;
 
-		if ( !otherBaseInventory.IsInBounds( slotOther.X, slotOther.Y, itemFromThis.Width, itemFromThis.Height ) )
+		if ( !otherBaseInventory.IsInBounds( slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
 			return InventoryResult.PlacementOutOfBounds;
 
-		if ( !IsInBounds( slotThis.X, slotThis.Y, itemFromOther.Width, itemFromOther.Height ) )
+		if ( !IsInBounds( slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) )
 			return InventoryResult.PlacementOutOfBounds;
 
 		ClearRect( slotThis.X, slotThis.Y, slotThis.W, slotThis.H );
@@ -724,8 +778,8 @@ public abstract class BaseInventory : IDisposable
 		otherBaseInventory.ClearRect( slotOther.X, slotOther.Y, slotOther.W, slotOther.H );
 		otherBaseInventory._entries.Remove( itemFromOther.Id );
 
-		var newSlotForThis = new InventorySlot( slotOther.X, slotOther.Y, itemFromThis.Width, itemFromThis.Height );
-		var newSlotForOther = new InventorySlot( slotThis.X, slotThis.Y, itemFromOther.Width, itemFromOther.Height );
+		var newSlotForThis = new InventorySlot( slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther );
+		var newSlotForOther = new InventorySlot( slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis );
 
 		if ( !otherBaseInventory.IsRectFree( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) ||
 		     !IsRectFree( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) )
@@ -780,7 +834,10 @@ public abstract class BaseInventory : IDisposable
 		if ( !_entries.TryGetValue( item.Id, out _ ) )
 			return InventoryResult.ItemNotInInventory;
 
-		var itemsAtTarget = destination.GetItemsInRect( x, y, item.Width, item.Height );
+		var destEffectiveW = destination.GetEffectiveWidth( item );
+		var destEffectiveH = destination.GetEffectiveHeight( item );
+
+		var itemsAtTarget = destination.GetItemsInRect( x, y, destEffectiveW, destEffectiveH );
 
 		if ( itemsAtTarget.Count == 0 )
 			return TryTransferToAt( item, destination, x, y );
@@ -822,7 +879,10 @@ public abstract class BaseInventory : IDisposable
 		if ( !_entries.TryGetValue( item.Id, out _ ) )
 			return InventoryResult.ItemNotInInventory;
 
-		var itemsAtTarget = GetItemsInRect( x, y, item.Width, item.Height );
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		var itemsAtTarget = GetItemsInRect( x, y, effectiveW, effectiveH );
 		itemsAtTarget.Remove( item );
 
 		if ( itemsAtTarget.Count == 0 )
@@ -902,7 +962,12 @@ public abstract class BaseInventory : IDisposable
 		if ( result != InventoryResult.Success )
 			return result;
 
-		var placeResult = PlaceItem( taken, slot );
+		// Adjust slot size based on slot mode
+		var effectiveW = GetEffectiveWidth( taken );
+		var effectiveH = GetEffectiveHeight( taken );
+		var adjustedSlot = new InventorySlot( slot.X, slot.Y, effectiveW, effectiveH );
+
+		var placeResult = PlaceItem( taken, adjustedSlot );
 		if ( placeResult != InventoryResult.Success )
 		{
 			RevertTake( item, taken );
@@ -1086,8 +1151,8 @@ public abstract class BaseInventory : IDisposable
 		// Collect all items and sort by size (largest first)
 		var items = _entries.Values
 			.Select( e => e.Item )
-			.OrderByDescending( i => i.Width * i.Height )
-			.ThenByDescending( i => Math.Max( i.Width, i.Height ) )
+			.OrderByDescending( i => GetEffectiveWidth( i ) * GetEffectiveHeight( i ) )
+			.ThenByDescending( i => Math.Max( GetEffectiveWidth( i ), GetEffectiveHeight( i ) ) )
 			.ToList();
 
 		foreach ( var item in items )
@@ -1103,16 +1168,18 @@ public abstract class BaseInventory : IDisposable
 		foreach ( var item in items )
 		{
 			var placed = false;
+			var effectiveW = GetEffectiveWidth( item );
+			var effectiveH = GetEffectiveHeight( item );
 
 			// Scan from top-left to bottom-right
-			for ( var y = 0; y <= Height - item.Height && !placed; y++ )
+			for ( var y = 0; y <= Height - effectiveH && !placed; y++ )
 			{
-				for ( var x = 0; x <= Width - item.Width && !placed; x++ )
+				for ( var x = 0; x <= Width - effectiveW && !placed; x++ )
 				{
-					if ( !IsRectFree( x, y, item.Width, item.Height ) || !CanPlaceAt( item, x, y, item.Width, item.Height ) )
+					if ( !IsRectFree( x, y, effectiveW, effectiveH ) || !CanPlaceAt( item, x, y, effectiveW, effectiveH ) )
 						continue;
 
-					var result = PlaceItem( item, new InventorySlot( x, y, item.Width, item.Height ) );
+					var result = PlaceItem( item, new InventorySlot( x, y, effectiveW, effectiveH ) );
 					if ( result == InventoryResult.Success )
 					{
 						placed = true;
@@ -1159,7 +1226,11 @@ public abstract class BaseInventory : IDisposable
 		if ( item is null ) return InventoryResult.ItemWasNull;
 		if ( Contains( item ) ) return InventoryResult.ItemAlreadyInInventory;
 		if ( !CanInsertItem( item ) ) return InventoryResult.InsertNotAllowed;
-		if ( slot.W != item.Width || slot.H != item.Height ) return InventoryResult.SlotSizeMismatch;
+
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		if ( slot.W != effectiveW || slot.H != effectiveH ) return InventoryResult.SlotSizeMismatch;
 		if ( !IsInBounds( slot.X, slot.Y, slot.W, slot.H ) ) return InventoryResult.PlacementOutOfBounds;
 		if ( !IsRectFree( slot.X, slot.Y, slot.W, slot.H ) ) return InventoryResult.PlacementCollision;
 		if ( !CanPlaceAt( item, slot.X, slot.Y, slot.W, slot.H ) ) return InventoryResult.PlacementNotAllowed;
@@ -1198,14 +1269,17 @@ public abstract class BaseInventory : IDisposable
 
 	private bool TryFindPlacement( InventoryItem item, out InventorySlot slot )
 	{
-		for ( var y = 0; y <= Height - item.Height; y++ )
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+
+		for ( var y = 0; y <= Height - effectiveH; y++ )
 		{
-			for ( var x = 0; x <= Width - item.Width; x++ )
+			for ( var x = 0; x <= Width - effectiveW; x++ )
 			{
-				if ( !IsRectFree( x, y, item.Width, item.Height ) || !CanPlaceAt( item, x, y, item.Width, item.Height ) )
+				if ( !IsRectFree( x, y, effectiveW, effectiveH ) || !CanPlaceAt( item, x, y, effectiveW, effectiveH ) )
 					continue;
 
-				slot = new InventorySlot( x, y, item.Width, item.Height );
+				slot = new InventorySlot( x, y, effectiveW, effectiveH );
 				return true;
 			}
 		}
