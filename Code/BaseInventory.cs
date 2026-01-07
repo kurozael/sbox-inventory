@@ -1414,6 +1414,6 @@ public abstract class BaseInventory : IDisposable
 
 	public void Dispose()
 	{
-		InventorySystem.Current?.Unregister( this );
+		InventorySystem.Unregister( this );
 	}
 }

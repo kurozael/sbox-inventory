@@ -25,13 +25,41 @@ public class NetworkedInventory
 		set
 		{
 			if ( value )
-				InventorySystem.Current?.Register( _baseInventory );
+				InventorySystem.Register( _baseInventory );
 			else
-				InventorySystem.Current?.Unregister( _baseInventory );
+				InventorySystem.Unregister( _baseInventory );
 
 			field = value;
 		}
 	}
+
+	/// <summary>
+	/// Determines how this inventory broadcasts updates to clients.
+	/// <see cref="NetworkMode.Subscribers"/> only sends to explicitly subscribed clients.
+	/// <see cref="NetworkMode.Global"/> broadcasts to all connected clients.
+	/// </summary>
+	public NetworkMode Mode
+	{
+		get;
+		set
+		{
+			if ( field == value )
+				return;
+
+			if ( Connection.Local.IsHost && value == NetworkMode.Global )
+			{
+				foreach ( var connection in Connection.All )
+				{
+					if ( connection == Connection.Local )
+						continue;
+
+					SendFullStateTo( connection.Id );
+				}
+			}
+
+			field = value;
+		}
+	} = NetworkMode.Subscribers;
 
 	internal NetworkedInventory( BaseInventory baseInventory )
 	{
@@ -145,7 +173,7 @@ public class NetworkedInventory
 			return;
 
 		var message = new InventoryClearAll( );
-		BroadcastToAll( message );
+		BroadcastToRecipients( message );
 	}
 
 	internal void BroadcastItemAdded( BaseInventory.Entry entry )
@@ -157,7 +185,8 @@ public class NetworkedInventory
 		entry.Item.Serialize( metadata );
 
 		var serialized = new SerializedEntry(
-			entry.Item,
+			entry.Item.Id,
+			entry.Item.GetType().FullName,
 			entry.Slot.X,
 			entry.Slot.Y,
 			entry.Slot.W,
@@ -166,7 +195,7 @@ public class NetworkedInventory
 		);
 
 		var message = new InventoryItemAdded( serialized );
-		BroadcastToAll( message );
+		BroadcastToRecipients( message );
 	}
 
 	internal void BroadcastItemRemoved( Guid itemId )
@@ -175,7 +204,7 @@ public class NetworkedInventory
 			return;
 
 		var message = new InventoryItemRemoved( itemId );
-		BroadcastToAll( message );
+		BroadcastToRecipients( message );
 	}
 
 	internal void BroadcastItemMoved( Guid itemId, int x, int y )
@@ -184,7 +213,7 @@ public class NetworkedInventory
 			return;
 
 		var message = new InventoryItemMoved( itemId, x, y );
-		BroadcastToAll( message );
+		BroadcastToRecipients( message );
 	}
 
 	internal void SendItemDataChangedList( IEnumerable<Guid> connections, InventoryItemDataChangedList list )
@@ -201,6 +230,17 @@ public class NetworkedInventory
 		}
 	}
 
+	/// <summary>
+	/// Broadcasts item data changes to all recipients based on the current <see cref="Mode"/>.
+	/// </summary>
+	internal void BroadcastItemDataChangedList( InventoryItemDataChangedList list )
+	{
+		if ( !Connection.Local.IsHost )
+			return;
+
+		BroadcastToRecipients( list );
+	}
+
 	public void SendFullStateTo( Guid connectionId )
 	{
 		if ( !Connection.Local.IsHost )
@@ -211,20 +251,20 @@ public class NetworkedInventory
 			var metadata = new Dictionary<string, object>();
 			e.Item.Serialize( metadata );
 
-			var entry = new SerializedEntry(
-				e.Item,
+			return new SerializedEntry(
+				e.Item.Id,
+				e.Item.GetType().FullName,
 				e.Slot.X,
 				e.Slot.Y,
 				e.Slot.W,
 				e.Slot.H,
 				metadata
 			);
-
-			return entry;
 		} ).ToList();
 
 		var typeId = TypeLibrary.GetType( _baseInventory.GetType() ).Identity;
-		var message = new InventoryStateSync( typeId, _baseInventory.Width, _baseInventory.Height, entries );
+		var message = new InventoryStateSync( typeId, _baseInventory.Width, _baseInventory.Height, _baseInventory.SlotMode, entries );
+		Log.Info( "Send InventoryStateSync for " +  _baseInventory.InventoryId );
 		SendToConnection( connectionId, message );
 	}
 
@@ -237,16 +277,36 @@ public class NetworkedInventory
 		ReceiveMessageFromClient( _baseInventory.InventoryId, requestId, serialized );
 	}
 
-	private void BroadcastToAll<T>( T message ) where T : struct
+	/// <summary>
+	/// Broadcasts a message to all recipients based on the current <see cref="Mode"/>.
+	/// For <see cref="NetworkMode.Subscribers"/>, only sends to subscribed clients.
+	/// For <see cref="NetworkMode.Global"/>, sends to all connected clients.
+	/// </summary>
+	private void BroadcastToRecipients<T>( T message ) where T : struct
 	{
 		if ( !Connection.Local.IsHost )
 			return;
 
 		var serialized = TypeLibrary.ToBytes( message );
 
-		using ( Rpc.FilterExclude( Connection.Local ) )
+		if ( Mode == NetworkMode.Global )
 		{
-			ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+			using ( Rpc.FilterExclude( Connection.Local ) )
+			{
+				ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+			}
+		}
+		else
+		{
+			var subscribers = _baseInventory.Subscribers
+				.Where( id => id != Connection.Local.Id )
+				.Select( Connection.Find )
+				.ToHashSet();
+
+			using ( Rpc.FilterInclude( subscribers ) )
+			{
+				ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+			}
 		}
 	}
 
@@ -268,50 +328,48 @@ public class NetworkedInventory
 	private static void ReceiveMessageFromHost( Guid inventoryId, byte[] data )
 	{
 		var message = TypeLibrary.FromBytes<object>( data );
-		var system = InventorySystem.Current;
-		if ( system is null ) return;
 
-		BaseInventory baseInventory;
+		BaseInventory inventory;
 
 		if ( message is not InventoryStateSync sync )
 		{
-			if ( !system.TryFind( inventoryId, out baseInventory ) )
+			if ( !InventorySystem.TryFind( inventoryId, out inventory ) )
 				return;
 		}
 		else
 		{
-			if ( !system.TryFind( inventoryId, out baseInventory ) )
+			if ( !InventorySystem.TryFind( inventoryId, out inventory ) )
 			{
 				var typeDescription = TypeLibrary.GetTypeByIdent( sync.TypeId );
-				baseInventory = typeDescription.Create<BaseInventory>( [inventoryId, sync.Width, sync.Height] );
-				baseInventory.Network.Enabled = true;
+				inventory = InventorySystem.GetOrCreate( typeDescription, inventoryId, sync.Width, sync.Height, sync.SlotMode );
+				inventory.Network.Enabled = true;
 			}
 		}
 
 		switch ( message )
 		{
 			case InventoryItemAdded msg:
-				HandleItemAdded( baseInventory, msg );
+				HandleItemAdded( inventory, msg );
 				break;
 
 			case InventoryItemRemoved msg:
-				HandleItemRemoved( baseInventory, msg );
+				HandleItemRemoved( inventory, msg );
 				break;
 
 			case InventoryItemMoved msg:
-				HandleItemMoved( baseInventory, msg );
+				HandleItemMoved( inventory, msg );
 				break;
 
 			case InventoryItemDataChangedList msg:
-				HandleItemDataChangedList( baseInventory, msg );
+				HandleItemDataChangedList( inventory, msg );
 				break;
 
 			case InventoryStateSync msg:
-				HandleStateSync( baseInventory, msg );
+				HandleStateSync( inventory, msg );
 				break;
 
 			case InventoryClearAll msg:
-				HandleClearAll( baseInventory );
+				HandleClearAll( inventory );
 				break;
 		}
 	}
@@ -319,11 +377,12 @@ public class NetworkedInventory
 	private static void HandleItemAdded( BaseInventory baseInventory, InventoryItemAdded msg )
 	{
 		var entry = msg.Entry;
-		var item = entry.CreateItem();
+		var itemType = TypeLibrary.GetType( entry.ItemType );
+		var item = itemType?.Create<InventoryItem>();
 		if ( item == null ) return;
 
 		item.Id = entry.ItemId;
-		item.Deserialize( entry.Metadata );
+		item.Deserialize( entry.Data );
 
 		baseInventory.ExecuteWithoutAuthority( () =>
 		{
@@ -384,11 +443,12 @@ public class NetworkedInventory
 
 			foreach ( var entry in msg.Entries )
 			{
-				var item = entry.CreateItem();
-				if ( item == null ) return;
+				var itemType = TypeLibrary.GetType( entry.ItemType );
+				var item = itemType?.Create<InventoryItem>();
+				if ( item == null ) continue;
 
 				item.Id = entry.ItemId;
-				item.Deserialize( entry.Metadata );
+				item.Deserialize( entry.Data );
 
 				baseInventory.TryAddAt( item, entry.X, entry.Y );
 			}
@@ -399,13 +459,11 @@ public class NetworkedInventory
 	private static void ReceiveMessageFromClient( Guid inventoryId, Guid requestId, byte[] data )
 	{
 		var message = TypeLibrary.FromBytes<object>( data );
-		var system = InventorySystem.Current;
-		if ( system is null ) return;
 
-		if ( !system.TryFind( inventoryId, out var inventory ) )
+		if ( !InventorySystem.TryFind( inventoryId, out var inventory ) )
 			return;
 
-		if ( !inventory.Subscribers.Contains( Rpc.CallerId ) )
+		if ( inventory.Network.Mode == NetworkMode.Subscribers && !inventory.Subscribers.Contains( Rpc.CallerId ) )
 			return;
 
 		var result = message switch
@@ -443,15 +501,11 @@ public class NetworkedInventory
 
 	private static InventoryResult HandleTransferRequest( BaseInventory baseInventory, InventoryTransferRequest msg )
 	{
-		var system = InventorySystem.Current;
-
-		if ( !system.TryFind( msg.DestinationId, out var destination ) )
+		if ( !InventorySystem.TryFind( msg.DestinationId, out var destination ) )
 			return InventoryResult.DestinationWasNull;
 
 		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		if ( item == null ) return InventoryResult.ItemNotInInventory;
-
-		return baseInventory.TryTransferToAt( item, destination, msg.X, msg.Y );
+		return item == null ? InventoryResult.ItemNotInInventory : baseInventory.TryTransferToAt( item, destination, msg.X, msg.Y );
 	}
 
 	private static InventoryResult HandleTakeRequest( BaseInventory baseInventory, InventoryTakeRequest msg )
@@ -482,10 +536,7 @@ public class NetworkedInventory
 	[Rpc.Broadcast]
 	private static void ReceiveActionResult( Guid inventoryId, Guid requestId, InventoryResult result )
 	{
-		var system = InventorySystem.Current;
-		if ( system is null ) return;
-
-		if ( system.TryFind( inventoryId, out var inventory ) )
+		if ( InventorySystem.TryFind( inventoryId, out var inventory ) )
 		{
 			inventory.Network.HandleActionResult( requestId, result );
 		}
@@ -638,12 +689,14 @@ public struct InventoryItemDataChangedList
 public struct InventoryStateSync
 {
 	public List<SerializedEntry> Entries;
+	public InventorySlotMode SlotMode;
 	public int Height;
 	public int Width;
 	public int TypeId;
 
-	public InventoryStateSync( int typeId, int width, int height, List<SerializedEntry> entries )
+	public InventoryStateSync( int typeId, int width, int height, InventorySlotMode slotMode, List<SerializedEntry> entries )
 	{
+		SlotMode = slotMode;
 		Entries = entries;
 		Width = width;
 		Height = height;
@@ -654,54 +707,21 @@ public struct InventoryStateSync
 public struct SerializedEntry
 {
 	public Guid ItemId;
-	public int[] GenericTypeIds;
-	public int TypeId;
+	public string ItemType;
 	public int X;
 	public int Y;
 	public int W;
 	public int H;
-	public Dictionary<string, object> Metadata;
+	public Dictionary<string, object> Data;
 
-	public SerializedEntry( InventoryItem item, int x, int y, int w, int h, Dictionary<string, object> metadata )
+	public SerializedEntry( Guid itemId, string itemType, int x, int y, int w, int h, Dictionary<string, object> data )
 	{
-		var itemType = item.GetType();
-		var typeDescription = TypeLibrary.GetType( itemType );
-
-		if ( typeDescription.IsGenericType )
-		{
-			GenericTypeIds = TypeLibrary.GetGenericArguments( itemType )
-				.Select( t => TypeLibrary.GetType( t ).Identity )
-				.ToArray();
-		}
-
-		ItemId = item.Id;
-		TypeId = typeDescription.Identity;
+		ItemId = itemId;
+		ItemType = itemType;
 		X = x;
 		Y = y;
 		W = w;
 		H = h;
-		Metadata = metadata;
-	}
-
-	/// <summary>
-	/// Create an <see cref="InventoryItem"/> from this serialized entry.
-	/// </summary>
-	public InventoryItem CreateItem()
-	{
-		var itemType = TypeLibrary.GetTypeByIdent( TypeId );
-
-		InventoryItem item;
-
-		if ( itemType.IsGenericType )
-		{
-			var genericTypes = GenericTypeIds.Select( id => TypeLibrary.GetTypeByIdent( id ).TargetType ).ToArray();
-			item = itemType.CreateGeneric<InventoryItem>( genericTypes );
-		}
-		else
-		{
-			item = itemType.Create<InventoryItem>();
-		}
-
-		return item;
+		Data = data;
 	}
 }

@@ -19,7 +19,7 @@ public abstract class InventoryItem
 
 		if ( Connection.Local.IsHost && property.Object is InventoryItem { Inventory: not null } item )
 		{
-			InventorySystem.Current?.MarkDirty( item.Inventory );
+			InventorySystem.MarkDirty( item.Inventory );
 			item.DirtyProperties.Add( property.MemberIdent );
 		}
 
