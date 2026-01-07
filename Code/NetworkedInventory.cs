@@ -11,7 +11,7 @@ namespace Conna.Inventory;
 /// </summary>
 public class NetworkedInventory
 {
-	private readonly BaseInventory _baseInventory;
+	private readonly BaseInventory _inventory;
 	private readonly Dictionary<Guid, TaskCompletionSource<InventoryResult>> _pendingRequests = new();
 	private const int RequestTimeoutMs = 5000;
 
@@ -25,9 +25,9 @@ public class NetworkedInventory
 		set
 		{
 			if ( value )
-				InventorySystem.Register( _baseInventory );
+				InventorySystem.Register( _inventory );
 			else
-				InventorySystem.Unregister( _baseInventory );
+				InventorySystem.Unregister( _inventory );
 
 			field = value;
 		}
@@ -61,17 +61,17 @@ public class NetworkedInventory
 		}
 	} = NetworkMode.Subscribers;
 
-	internal NetworkedInventory( BaseInventory baseInventory )
+	internal NetworkedInventory( BaseInventory inventory )
 	{
-		_baseInventory = baseInventory;
+		_inventory = inventory;
 	}
 
-	private bool ShouldSendRequest => _baseInventory.IsNetworked && !_baseInventory.HasAuthority;
+	private bool ShouldSendRequest => _inventory.IsNetworked && !_inventory.HasAuthority;
 
 	public async Task<InventoryResult> TryMove( InventoryItem item, int newX, int newY )
 	{
 		if ( !ShouldSendRequest )
-			return _baseInventory.TryMove( item, newX, newY );
+			return _inventory.TryMove( item, newX, newY );
 
 		return await SendRequest( new InventoryMoveRequest( item.Id, newX, newY ) );
 	}
@@ -81,13 +81,13 @@ public class NetworkedInventory
 		if ( ShouldSendRequest )
 			return await SendRequest( new InventoryMoveRequest( item.Id, x, y ) );
 
-		return _baseInventory.TryMoveOrSwap( item, x, y, out _ );
+		return _inventory.TryMoveOrSwap( item, x, y, out _ );
 	}
 
 	public async Task<InventoryResult> TrySwap( InventoryItem itemA, InventoryItem itemB )
 	{
 		if ( !ShouldSendRequest )
-			return _baseInventory.TrySwap( itemA, itemB );
+			return _inventory.TrySwap( itemA, itemB );
 
 		return await SendRequest( new InventorySwapRequest( itemA.Id, itemB.Id ) );
 	}
@@ -95,7 +95,7 @@ public class NetworkedInventory
 	public async Task<InventoryResult> TryTransferToAt( InventoryItem item, BaseInventory destination, int x, int y )
 	{
 		if ( !ShouldSendRequest )
-			return _baseInventory.TryTransferToAt( item, destination, x, y );
+			return _inventory.TryTransferToAt( item, destination, x, y );
 
 		return await SendRequest( new InventoryTransferRequest( item.Id, destination.InventoryId, x, y ) );
 	}
@@ -107,7 +107,7 @@ public class NetworkedInventory
 			return await SendRequest( new InventoryTakeRequest( item.Id, amount, slot.X, slot.Y ) );
 		}
 
-		return _baseInventory.TryTakeAndPlace( item, amount, slot, out _ );
+		return _inventory.TryTakeAndPlace( item, amount, slot, out _ );
 	}
 
 	public async Task<InventoryResult> TryCombineStacks( InventoryItem source, InventoryItem dest, int amount )
@@ -117,13 +117,13 @@ public class NetworkedInventory
 			return await SendRequest( new InventoryCombineStacksRequest( source.Id, dest.Id, amount ) );
 		}
 
-		return _baseInventory.TryCombineStacks( source, dest, amount, out _ );
+		return _inventory.TryCombineStacks( source, dest, amount, out _ );
 	}
 
 	public async Task<InventoryResult> AutoSort()
 	{
 		if ( !ShouldSendRequest )
-			return _baseInventory.AutoSort();
+			return _inventory.AutoSort();
 
 		return await SendRequest( new InventoryAutoSortRequest() );
 	}
@@ -132,7 +132,7 @@ public class NetworkedInventory
 	{
 		if ( !ShouldSendRequest )
 		{
-			return _baseInventory.TryConsolidateStacks();
+			return _inventory.TryConsolidateStacks();
 		}
 
 		return await SendRequest( new InventoryConsolidateRequest() );
@@ -172,7 +172,7 @@ public class NetworkedInventory
 		if ( !Connection.Local.IsHost )
 			return;
 
-		var message = new InventoryClearAll( );
+		var message = new InventoryClearAll();
 		BroadcastToRecipients( message );
 	}
 
@@ -185,8 +185,7 @@ public class NetworkedInventory
 		entry.Item.Serialize( metadata );
 
 		var serialized = new SerializedEntry(
-			entry.Item.Id,
-			entry.Item.GetType().FullName,
+			entry.Item,
 			entry.Slot.X,
 			entry.Slot.Y,
 			entry.Slot.W,
@@ -246,14 +245,13 @@ public class NetworkedInventory
 		if ( !Connection.Local.IsHost )
 			return;
 
-		var entries = _baseInventory.Entries.Select( e =>
+		var entries = _inventory.Entries.Select( e =>
 		{
 			var metadata = new Dictionary<string, object>();
 			e.Item.Serialize( metadata );
 
 			return new SerializedEntry(
-				e.Item.Id,
-				e.Item.GetType().FullName,
+				e.Item,
 				e.Slot.X,
 				e.Slot.Y,
 				e.Slot.W,
@@ -262,9 +260,9 @@ public class NetworkedInventory
 			);
 		} ).ToList();
 
-		var typeId = TypeLibrary.GetType( _baseInventory.GetType() ).Identity;
-		var message = new InventoryStateSync( typeId, _baseInventory.Width, _baseInventory.Height, _baseInventory.SlotMode, entries );
-		Log.Info( "Send InventoryStateSync for " +  _baseInventory.InventoryId );
+		var typeId = TypeLibrary.GetType( _inventory.GetType() ).Identity;
+		var message = new InventoryStateSync( typeId, _inventory.Width, _inventory.Height, _inventory.SlotMode, entries );
+		Log.Info( "Send InventoryStateSync for " +  _inventory.InventoryId );
 		SendToConnection( connectionId, message );
 	}
 
@@ -274,7 +272,7 @@ public class NetworkedInventory
 			return;
 
 		var serialized = TypeLibrary.ToBytes( message );
-		ReceiveMessageFromClient( _baseInventory.InventoryId, requestId, serialized );
+		ReceiveMessageFromClient( _inventory.InventoryId, requestId, serialized );
 	}
 
 	/// <summary>
@@ -293,19 +291,19 @@ public class NetworkedInventory
 		{
 			using ( Rpc.FilterExclude( Connection.Local ) )
 			{
-				ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+				ReceiveMessageFromHost( _inventory.InventoryId, serialized );
 			}
 		}
 		else
 		{
-			var subscribers = _baseInventory.Subscribers
+			var subscribers = _inventory.Subscribers
 				.Where( id => id != Connection.Local.Id )
 				.Select( Connection.Find )
 				.ToHashSet();
 
 			using ( Rpc.FilterInclude( subscribers ) )
 			{
-				ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+				ReceiveMessageFromHost( _inventory.InventoryId, serialized );
 			}
 		}
 	}
@@ -320,7 +318,7 @@ public class NetworkedInventory
 
 		using ( Rpc.FilterInclude( connection ) )
 		{
-			ReceiveMessageFromHost( _baseInventory.InventoryId, serialized );
+			ReceiveMessageFromHost( _inventory.InventoryId, serialized );
 		}
 	}
 
@@ -374,83 +372,81 @@ public class NetworkedInventory
 		}
 	}
 
-	private static void HandleItemAdded( BaseInventory baseInventory, InventoryItemAdded msg )
+	private static void HandleItemAdded( BaseInventory inventory, InventoryItemAdded msg )
 	{
 		var entry = msg.Entry;
-		var itemType = TypeLibrary.GetType( entry.ItemType );
-		var item = itemType?.Create<InventoryItem>();
+		var item = entry.CreateItem();
 		if ( item == null ) return;
 
 		item.Id = entry.ItemId;
-		item.Deserialize( entry.Data );
+		item.Deserialize( entry.Metadata );
 
-		baseInventory.ExecuteWithoutAuthority( () =>
+		inventory.ExecuteWithoutAuthority( () =>
 		{
-			baseInventory.TryAddAt( item, entry.X, entry.Y );
+			inventory.TryAddAt( item, entry.X, entry.Y );
 		});
 	}
 
-	private static void HandleItemRemoved( BaseInventory baseInventory, InventoryItemRemoved msg )
+	private static void HandleItemRemoved( BaseInventory inventory, InventoryItemRemoved msg )
 	{
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
 		if ( item == null ) return;
 
-		baseInventory.ExecuteWithoutAuthority( () =>
+		inventory.ExecuteWithoutAuthority( () =>
 		{
-			baseInventory.TryRemove( item );
+			inventory.TryRemove( item );
 		});
 	}
 
-	private static void HandleClearAll( BaseInventory baseInventory )
+	private static void HandleClearAll( BaseInventory inventory )
 	{
-		baseInventory.ExecuteWithoutAuthority( () =>
+		inventory.ExecuteWithoutAuthority( () =>
 		{
-			baseInventory.ClearAll();
+			inventory.ClearAll();
 		});
 	}
 
-	private static void HandleItemMoved( BaseInventory baseInventory, InventoryItemMoved msg )
+	private static void HandleItemMoved( BaseInventory inventory, InventoryItemMoved msg )
 	{
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
 		if ( item == null ) return;
 
-		baseInventory.ExecuteWithoutAuthority( () =>
+		inventory.ExecuteWithoutAuthority( () =>
 		{
-			baseInventory.TryMove( item, msg.X, msg.Y );
+			inventory.TryMove( item, msg.X, msg.Y );
 		});
 	}
 
-	private static void HandleItemDataChangedList( BaseInventory baseInventory, InventoryItemDataChangedList msg )
+	private static void HandleItemDataChangedList( BaseInventory inventory, InventoryItemDataChangedList msg )
 	{
 		foreach ( var entry in msg.List )
 		{
-			var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == entry.ItemId ).Item;
+			var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == entry.ItemId ).Item;
 			item?.Deserialize( entry.Data );
 		}
 
-		baseInventory.OnInventoryChanged?.Invoke();
+		inventory.OnInventoryChanged?.Invoke();
 	}
 
-	private static void HandleStateSync( BaseInventory baseInventory, InventoryStateSync msg )
+	private static void HandleStateSync( BaseInventory inventory, InventoryStateSync msg )
 	{
-		baseInventory.ExecuteWithoutAuthority( () =>
+		inventory.ExecuteWithoutAuthority( () =>
 		{
-			var existingItems = baseInventory.Entries.Select( e => e.Item ).ToList();
+			var existingItems = inventory.Entries.Select( e => e.Item ).ToList();
 			foreach ( var item in existingItems )
 			{
-				baseInventory.TryRemove( item );
+				inventory.TryRemove( item );
 			}
 
 			foreach ( var entry in msg.Entries )
 			{
-				var itemType = TypeLibrary.GetType( entry.ItemType );
-				var item = itemType?.Create<InventoryItem>();
-				if ( item == null ) continue;
+				var item = entry.CreateItem();
+				if ( item == null ) return;
 
 				item.Id = entry.ItemId;
-				item.Deserialize( entry.Data );
+				item.Deserialize( entry.Metadata );
 
-				baseInventory.TryAddAt( item, entry.X, entry.Y );
+				inventory.TryAddAt( item, entry.X, entry.Y );
 			}
 		});
 	}
@@ -484,53 +480,53 @@ public class NetworkedInventory
 		}
 	}
 
-	private static InventoryResult HandleMoveRequest( BaseInventory baseInventory, InventoryMoveRequest msg )
+	private static InventoryResult HandleMoveRequest( BaseInventory inventory, InventoryMoveRequest msg )
 	{
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		return item == null ? InventoryResult.ItemNotInInventory : baseInventory.TryMoveOrSwap( item, msg.X, msg.Y, out _ );
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryMoveOrSwap( item, msg.X, msg.Y, out _ );
 	}
 
-	private static InventoryResult HandleSwapRequest( BaseInventory baseInventory, InventorySwapRequest msg )
+	private static InventoryResult HandleSwapRequest( BaseInventory inventory, InventorySwapRequest msg )
 	{
-		var itemA = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemAId ).Item;
-		var itemB = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemBId ).Item;
+		var itemA = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemAId ).Item;
+		var itemB = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemBId ).Item;
 		if ( itemA == null || itemB == null ) return InventoryResult.ItemNotInInventory;
 
-		return baseInventory.TrySwap( itemA, itemB );
+		return inventory.TrySwap( itemA, itemB );
 	}
 
-	private static InventoryResult HandleTransferRequest( BaseInventory baseInventory, InventoryTransferRequest msg )
+	private static InventoryResult HandleTransferRequest( BaseInventory inventory, InventoryTransferRequest msg )
 	{
 		if ( !InventorySystem.TryFind( msg.DestinationId, out var destination ) )
 			return InventoryResult.DestinationWasNull;
 
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		return item == null ? InventoryResult.ItemNotInInventory : baseInventory.TryTransferToAt( item, destination, msg.X, msg.Y );
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryTransferToAt( item, destination, msg.X, msg.Y );
 	}
 
-	private static InventoryResult HandleTakeRequest( BaseInventory baseInventory, InventoryTakeRequest msg )
+	private static InventoryResult HandleTakeRequest( BaseInventory inventory, InventoryTakeRequest msg )
 	{
-		var item = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		return item == null ? InventoryResult.ItemNotInInventory : baseInventory.TryTakeAndPlace( item, msg.Amount, new InventorySlot( msg.X, msg.Y, item.Width, item.Height ), out _ );
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryTakeAndPlace( item, msg.Amount, new InventorySlot( msg.X, msg.Y, item.Width, item.Height ), out _ );
 	}
 
-	private static InventoryResult HandleCombineStacksRequest( BaseInventory baseInventory, InventoryCombineStacksRequest msg )
+	private static InventoryResult HandleCombineStacksRequest( BaseInventory inventory, InventoryCombineStacksRequest msg )
 	{
-		var source = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.SourceId ).Item;
-		var dest = baseInventory.Entries.FirstOrDefault( e => e.Item.Id == msg.DestId ).Item;
+		var source = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.SourceId ).Item;
+		var dest = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.DestId ).Item;
 		if ( source == null || dest == null ) return InventoryResult.ItemNotInInventory;
 
-		return baseInventory.TryCombineStacks( source, dest, msg.Amount, out _ );
+		return inventory.TryCombineStacks( source, dest, msg.Amount, out _ );
 	}
 
-	private static InventoryResult HandleAutoSortRequest( BaseInventory baseInventory, InventoryAutoSortRequest msg )
+	private static InventoryResult HandleAutoSortRequest( BaseInventory inventory, InventoryAutoSortRequest msg )
 	{
-		return baseInventory.AutoSort();
+		return inventory.AutoSort();
 	}
 
-	private static InventoryResult HandleConsolidateRequest( BaseInventory baseInventory, InventoryConsolidateRequest msg )
+	private static InventoryResult HandleConsolidateRequest( BaseInventory inventory, InventoryConsolidateRequest msg )
 	{
-		return baseInventory.TryConsolidateStacks();
+		return inventory.TryConsolidateStacks();
 	}
 
 	[Rpc.Broadcast]
@@ -707,21 +703,54 @@ public struct InventoryStateSync
 public struct SerializedEntry
 {
 	public Guid ItemId;
-	public string ItemType;
+	public int[] GenericTypeIds;
+	public int TypeId;
 	public int X;
 	public int Y;
 	public int W;
 	public int H;
-	public Dictionary<string, object> Data;
+	public Dictionary<string, object> Metadata;
 
-	public SerializedEntry( Guid itemId, string itemType, int x, int y, int w, int h, Dictionary<string, object> data )
+	public SerializedEntry( InventoryItem item, int x, int y, int w, int h, Dictionary<string, object> metadata )
 	{
-		ItemId = itemId;
-		ItemType = itemType;
+		var itemType = item.GetType();
+		var typeDescription = TypeLibrary.GetType( itemType );
+
+		if ( typeDescription.IsGenericType )
+		{
+			GenericTypeIds = TypeLibrary.GetGenericArguments( itemType )
+				.Select( t => TypeLibrary.GetType( t ).Identity )
+				.ToArray();
+		}
+
+		ItemId = item.Id;
+		TypeId = typeDescription.Identity;
 		X = x;
 		Y = y;
 		W = w;
 		H = h;
-		Data = data;
+		Metadata = metadata;
+	}
+
+	/// <summary>
+	/// Create an <see cref="InventoryItem"/> from this serialized entry.
+	/// </summary>
+	public InventoryItem CreateItem()
+	{
+		var itemType = TypeLibrary.GetTypeByIdent( TypeId );
+
+		InventoryItem item;
+
+		if ( itemType.IsGenericType )
+		{
+			var genericTypes = GenericTypeIds.Select( id => TypeLibrary.GetTypeByIdent( id ).TargetType ).ToArray();
+			item = itemType.CreateGeneric<InventoryItem>( genericTypes );
+		}
+		else
+		{
+			item = itemType.Create<InventoryItem>();
+		}
+
+		return item;
 	}
 }
