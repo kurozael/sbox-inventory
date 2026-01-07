@@ -10,6 +10,7 @@ A flexible, networked, grid-based inventory system for s&box featuring Tetris-st
 - **Built-in networking** with host authority model
 - **Drag-and-drop UI** support with swap and split operations
 - **Auto-sort and consolidation** utilities
+- **Different slot modes** can either use Tetris-style or single slot mode
 
 ---
 
