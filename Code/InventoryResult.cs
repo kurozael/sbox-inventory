@@ -25,5 +25,6 @@ public enum InventoryResult
 	BothItemsMustBeInInventory,
 	DestinationStackFull,
 	NoAuthority,
-	RequestTimeout
+	RequestTimeout,
+	InteractionHandled
 }

@@ -250,14 +250,19 @@
 			{
 				var targetItem = itemsAtTarget[0];
 
-				// Check for stacking first
-				if ( DraggedItem.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
+				// Check for custom interaction first
+				if ( Inventory.CanInteractWith( DraggedItem, targetItem ) )
+				{
+					CanDropAtCurrentPosition = true;
+				}
+				// Check for stacking
+				else if ( DraggedItem.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 				{
 					CanDropAtCurrentPosition = true;
 				}
 				else
 				{
-					// Just use the built-in CanMoveOrSwap logic
+					// Check for swap
 					CanDropAtCurrentPosition = Inventory.CanMoveOrSwap( DraggedItem, targetX, targetY );
 				}
 			}

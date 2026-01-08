@@ -152,6 +152,34 @@ public abstract class BaseInventory : IDisposable
 	protected virtual bool CanPlaceAt( InventoryItem item, int x, int y, int w, int h ) => true;
 	protected virtual bool CanStack( InventoryItem a, InventoryItem b ) => a.CanStackWith( b );
 
+	/// <summary>
+	/// Called when an item is dropped onto another item within this inventory.
+	/// Override to implement inventory-wide custom behaviors.
+	/// By default, delegates to the target item's TryInteractWith method.
+	/// Return true to consume the interaction and prevent default stacking/swapping.
+	/// </summary>
+	/// <param name="source">The item being dropped.</param>
+	/// <param name="target">The item being dropped onto.</param>
+	/// <param name="result">The result of the interaction.</param>
+	/// <returns>True if the interaction was handled, false to continue with default behavior.</returns>
+	protected virtual bool TryItemInteraction( InventoryItem source, InventoryItem target, out InventoryResult result )
+	{
+		return target.TryInteractWith( source, this, out result );
+	}
+
+	/// <summary>
+	/// Checks if a dropped item can potentially interact with a target item.
+	/// Used for UI preview validation.
+	/// By default, delegates to the target item's CanInteractWith method.
+	/// </summary>
+	/// <param name="source">The item being dropped.</param>
+	/// <param name="target">The item being dropped onto.</param>
+	/// <returns>True if the items can interact.</returns>
+	public virtual bool CanInteractWith( InventoryItem source, InventoryItem target )
+	{
+		return target.CanInteractWith( source, this );
+	}
+
 	public bool Contains( InventoryItem item ) => item is not null && _entries.ContainsKey( item.Id );
 
 	/// <summary>
@@ -306,6 +334,9 @@ public abstract class BaseInventory : IDisposable
 		if ( itemsAtTarget.Count == 1 )
 		{
 			var other = itemsAtTarget[0];
+
+			if ( CanInteractWith( item, other ) )
+				return true;
 
 			if ( item.CanStackWith( other ) && other.SpaceLeftInStack() > 0 )
 				return true;
@@ -847,6 +878,9 @@ public abstract class BaseInventory : IDisposable
 
 		var targetItem = itemsAtTarget[0];
 
+		if ( destination.TryItemInteraction( item, targetItem, out var interactionResult ) )
+			return interactionResult;
+
 		if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 		{
 			var result = TryTransferTo( item, destination );
@@ -892,6 +926,9 @@ public abstract class BaseInventory : IDisposable
 			return InventoryResult.PlacementCollision;
 
 		var targetItem = itemsAtTarget[0];
+
+		if ( TryItemInteraction( item, targetItem, out var interactionResult ) )
+			return interactionResult;
 
 		if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 		{

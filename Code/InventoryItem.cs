@@ -128,5 +128,29 @@ public abstract class InventoryItem
 	public virtual void OnAdded( BaseInventory baseInventory ) { }
 	public virtual void OnRemoved( BaseInventory baseInventory ) { }
 
+	/// <summary>
+	/// Called when another item is dropped onto this item.
+	/// Override to implement custom behaviors like container insertion or crafting.
+	/// Return true to consume the interaction and prevent default stacking/swapping.
+	/// </summary>
+	/// <param name="droppedItem">The item being dropped onto this item.</param>
+	/// <param name="inventory">The inventory where the interaction is occurring.</param>
+	/// <param name="result">The result of the interaction.</param>
+	/// <returns>True if the interaction was handled, false to continue with default behavior.</returns>
+	public virtual bool TryInteractWith( InventoryItem droppedItem, BaseInventory inventory, out InventoryResult result )
+	{
+		result = InventoryResult.Success;
+		return false;
+	}
+
+	/// <summary>
+	/// Checks if a dropped item can potentially interact with this item.
+	/// Used for UI preview validation.
+	/// </summary>
+	/// <param name="droppedItem">The item being dropped onto this item.</param>
+	/// <param name="inventory">The inventory where the interaction would occur.</param>
+	/// <returns>True if the dropped item can interact with this item.</returns>
+	public virtual bool CanInteractWith( InventoryItem droppedItem, BaseInventory inventory ) => false;
+
 	public int SpaceLeftInStack() => Math.Max( 0, MaxStackSize - StackCount );
 }
