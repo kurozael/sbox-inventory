@@ -879,7 +879,15 @@ public abstract class BaseInventory : IDisposable
 		var targetItem = itemsAtTarget[0];
 
 		if ( destination.TryItemInteraction( item, targetItem, out var interactionResult ) )
+		{
+			if ( interactionResult == InventoryResult.ItemNotInInventory && destination != this )
+			{
+				var removeResult = TryRemove( item );
+				return removeResult == InventoryResult.Success ? InventoryResult.Success : removeResult;
+			}
+
 			return interactionResult;
+		}
 
 		if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 		{
