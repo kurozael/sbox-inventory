@@ -1093,8 +1093,66 @@ public abstract class BaseInventory : IDisposable
 	public InventoryResult TrySplitAndTransferTo( InventoryItem item, int splitAmount, BaseInventory destination, out InventoryItem transferred )
 		=> TryTakeAndTransferTo( item, splitAmount, destination, out transferred );
 
-	public InventoryResult TrySplitAndTransferToAt( InventoryItem item, int splitAmount, BaseInventory destination, int x, int y, out InventoryItem transferred )
-		=> TryTakeAndTransferToAt( item, splitAmount, destination, x, y, out transferred );
+		public InventoryResult TrySplitAndTransferToAt( InventoryItem item, int splitAmount, BaseInventory destination, int x, int y, out InventoryItem transferred )
+		{
+			transferred = null;
+
+			// Check ownership for networked inventories
+			if ( !HasAuthority )
+				return InventoryResult.NoAuthority;
+
+			if ( destination is null )
+				return InventoryResult.DestinationWasNull;
+
+			if ( item is null )
+				return InventoryResult.ItemWasNull;
+
+			if ( !_entries.TryGetValue( item.Id, out _ ) )
+				return InventoryResult.ItemNotInInventory;
+
+			var destEffectiveW = destination.GetEffectiveWidth( item );
+			var destEffectiveH = destination.GetEffectiveHeight( item );
+			var itemsAtTarget = destination.GetItemsInRect( x, y, destEffectiveW, destEffectiveH );
+
+			if ( itemsAtTarget.Count == 0 )
+				return TryTakeAndTransferToAt( item, splitAmount, destination, x, y, out transferred );
+
+			if ( itemsAtTarget.Count != 1 )
+				return InventoryResult.PlacementCollision;
+
+			var targetItem = itemsAtTarget[0];
+
+			var takeResult = TryTake( item, splitAmount, out var taken );
+			if ( takeResult != InventoryResult.Success )
+				return takeResult;
+
+			if ( destination.TryItemInteraction( taken, targetItem, out var interactionResult ) )
+			{
+				if ( interactionResult == InventoryResult.ItemNotInInventory )
+					return InventoryResult.Success;
+
+				if ( interactionResult != InventoryResult.Success )
+					RevertTake( item, taken );
+
+				return interactionResult;
+			}
+
+			RevertTake( item, taken );
+
+			if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
+			{
+				var amountToMove = Math.Min( splitAmount, targetItem.SpaceLeftInStack() );
+				if ( !CanTransferItemTo( taken, destination ) )
+					return InventoryResult.TransferNotAllowed;
+
+				if ( !destination.CanReceiveTransferFrom( taken, this ) )
+					return InventoryResult.ReceiveNotAllowed;
+
+				return TryCombineStacksTo( item, targetItem, destination, amountToMove, out _ );
+			}
+
+			return InventoryResult.StackingNotAllowed;
+		}
 
 	public InventoryResult TryCombineStacks( InventoryItem source, InventoryItem destination, int amount, out int moved )
 	{
