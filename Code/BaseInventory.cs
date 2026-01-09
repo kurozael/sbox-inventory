@@ -49,6 +49,12 @@ public abstract class BaseInventory : IDisposable
 	/// </summary>
 	public NetworkedInventory Network { get; }
 
+	/// <summary>
+	/// When inside a method with the <see cref="HostAttribute"/> this will be the <see cref="Connection"/>
+	/// that called the method remotely.
+	/// </summary>
+	public Connection Caller { get; internal set; }
+
 	private readonly HashSet<Guid> _subscribers = [];
 
 	/// <summary>

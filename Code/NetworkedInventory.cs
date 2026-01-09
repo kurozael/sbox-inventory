@@ -13,6 +13,7 @@ public class NetworkedInventory
 {
 	private readonly BaseInventory _inventory;
 	private readonly Dictionary<Guid, TaskCompletionSource<InventoryResult>> _pendingRequests = new();
+	private readonly Dictionary<Guid, TaskCompletionSource<object>> _pendingInvocations = new();
 	private const int RequestTimeoutMs = 5000;
 
 	/// <summary>
@@ -138,6 +139,31 @@ public class NetworkedInventory
 		return await SendRequest( new InventoryConsolidateRequest() );
 	}
 
+	internal void InvokeOnHost<T>( T message ) where T : struct
+	{
+		SendToHost( Guid.Empty, message );
+	}
+
+	internal async Task<object> InvokeOnHostAsync<T>( T message ) where T : struct
+	{
+		var requestId = Guid.NewGuid();
+		var tcs = new TaskCompletionSource<object>();
+		_pendingInvocations[requestId] = tcs;
+
+		SendToHost( requestId, message );
+
+		var timeoutTask = GameTask.Delay( RequestTimeoutMs );
+		var completedTask = GameTask.WhenAny( tcs.Task, timeoutTask );
+
+		await completedTask;
+
+		if ( completedTask != timeoutTask )
+			return await tcs.Task;
+
+		_pendingInvocations.Remove( requestId );
+		return null;
+	}
+
 	private async Task<InventoryResult> SendRequest<T>( T message ) where T : struct
 	{
 		var requestId = Guid.NewGuid();
@@ -156,6 +182,15 @@ public class NetworkedInventory
 
 		_pendingRequests.Remove( requestId );
 		return InventoryResult.RequestTimeout;
+	}
+
+	internal void HandleInvocationResult( Guid requestId, object result )
+	{
+		if ( !_pendingInvocations.TryGetValue( requestId, out var tcs ) )
+			return;
+
+		tcs.SetResult( result );
+		_pendingInvocations.Remove( requestId );
 	}
 
 	internal void HandleActionResult( Guid requestId, InventoryResult result )
@@ -262,11 +297,10 @@ public class NetworkedInventory
 
 		var typeId = TypeLibrary.GetType( _inventory.GetType() ).Identity;
 		var message = new InventoryStateSync( typeId, _inventory.Width, _inventory.Height, _inventory.SlotMode, entries );
-		Log.Info( "Send InventoryStateSync for " +  _inventory.InventoryId );
 		SendToConnection( connectionId, message );
 	}
 
-	private void SendToHost<T>( Guid requestId, T message ) where T : struct
+	internal void SendToHost<T>( Guid requestId, T message ) where T : struct
 	{
 		if ( Connection.Local.IsHost )
 			return;
@@ -459,24 +493,101 @@ public class NetworkedInventory
 		if ( !InventorySystem.TryFind( inventoryId, out var inventory ) )
 			return;
 
+		if ( message is InventoryItemInvoke itemInvokeMsg )
+		{
+			var result = HandleInventoryItemInvoke( inventory, itemInvokeMsg );
+
+			if ( requestId == Guid.Empty )
+				return;
+
+			using ( Rpc.FilterInclude( Rpc.Caller ) )
+			{
+				ReceiveInvocationResult( inventoryId, requestId, result );
+			}
+
+			return;
+		}
+
+		if ( message is InventoryInvoke inventoryInvokeMsg )
+		{
+			var result = HandleInventoryInvoke( inventory, inventoryInvokeMsg );
+
+			if ( requestId == Guid.Empty )
+				return;
+
+			using ( Rpc.FilterInclude( Rpc.Caller ) )
+			{
+				ReceiveInvocationResult( inventoryId, requestId, result );
+			}
+
+			return;
+		}
+
 		if ( inventory.Network.Mode == NetworkMode.Subscribers && !inventory.Subscribers.Contains( Rpc.CallerId ) )
 			return;
 
-		var result = message switch
 		{
-			InventoryMoveRequest msg => HandleMoveRequest( inventory, msg ),
-			InventorySwapRequest msg => HandleSwapRequest( inventory, msg ),
-			InventoryTransferRequest msg => HandleTransferRequest( inventory, msg ),
-			InventoryTakeRequest msg => HandleTakeRequest( inventory, msg ),
-			InventoryCombineStacksRequest msg => HandleCombineStacksRequest( inventory, msg ),
-			InventoryAutoSortRequest msg => HandleAutoSortRequest( inventory, msg ),
-			InventoryConsolidateRequest msg => HandleConsolidateRequest( inventory, msg ),
-			_ => InventoryResult.InsertNotAllowed
-		};
+			var result = message switch
+			{
+				InventoryMoveRequest msg => HandleMoveRequest( inventory, msg ),
+				InventorySwapRequest msg => HandleSwapRequest( inventory, msg ),
+				InventoryTransferRequest msg => HandleTransferRequest( inventory, msg ),
+				InventoryTakeRequest msg => HandleTakeRequest( inventory, msg ),
+				InventoryCombineStacksRequest msg => HandleCombineStacksRequest( inventory, msg ),
+				InventoryAutoSortRequest msg => HandleAutoSortRequest( inventory, msg ),
+				InventoryConsolidateRequest msg => HandleConsolidateRequest( inventory, msg ),
+				_ => InventoryResult.InsertNotAllowed
+			};
 
-		using ( Rpc.FilterInclude( Rpc.Caller ) )
+			using ( Rpc.FilterInclude( Rpc.Caller ) )
+			{
+				ReceiveActionResult( inventoryId, requestId, result );
+			}
+		}
+	}
+
+	private static object HandleInventoryItemInvoke( BaseInventory inventory, InventoryItemInvoke msg )
+	{
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
+
+		item.Caller = Rpc.Caller;
+
+		try
 		{
-			ReceiveActionResult( inventoryId, requestId, result );
+			if ( method.ReturnType != typeof( void ) )
+			{
+				return method.InvokeWithReturn<object>( item, msg.Args );
+			}
+
+			method.Invoke( item, msg.Args );
+			return null;
+		}
+		finally
+		{
+			item.Caller = null;
+		}
+	}
+
+	private static object HandleInventoryInvoke( BaseInventory inventory, InventoryInvoke msg )
+	{
+		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
+
+		inventory.Caller = Rpc.Caller;
+
+		try
+		{
+			if ( method.ReturnType != typeof( void ) )
+			{
+				return method.InvokeWithReturn<object>( inventory, msg.Args );
+			}
+
+			method.Invoke( inventory, msg.Args );
+			return null;
+		}
+		finally
+		{
+			inventory.Caller = null;
 		}
 	}
 
@@ -527,6 +638,15 @@ public class NetworkedInventory
 	private static InventoryResult HandleConsolidateRequest( BaseInventory inventory, InventoryConsolidateRequest msg )
 	{
 		return inventory.TryConsolidateStacks();
+	}
+
+	[Rpc.Broadcast]
+	private static void ReceiveInvocationResult( Guid inventoryId, Guid requestId, object result )
+	{
+		if ( InventorySystem.TryFind( inventoryId, out var inventory ) )
+		{
+			inventory.Network.HandleInvocationResult( requestId, result );
+		}
 	}
 
 	[Rpc.Broadcast]
@@ -679,6 +799,36 @@ public struct InventoryItemDataChangedList
 	public InventoryItemDataChangedList( InventoryItemDataChanged[] list )
 	{
 		List = list;
+	}
+}
+
+public struct InventoryItemInvoke
+{
+	public Guid InventoryId;
+	public Guid ItemId;
+	public int MethodId;
+	public object[] Args;
+
+	public InventoryItemInvoke( Guid inventoryId, Guid itemId, int methodId, params object[] args )
+	{
+		InventoryId = inventoryId;
+		ItemId = itemId;
+		MethodId = methodId;
+		Args = args;
+	}
+}
+
+public struct InventoryInvoke
+{
+	public Guid InventoryId;
+	public int MethodId;
+	public object[] Args;
+
+	public InventoryInvoke( Guid inventoryId, int methodId, params object[] args )
+	{
+		InventoryId = inventoryId;
+		MethodId = methodId;
+		Args = args;
 	}
 }
 

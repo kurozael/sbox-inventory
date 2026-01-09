@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Sandbox;
 
 namespace Conna.Inventory;
@@ -26,6 +27,101 @@ public abstract class InventoryItem
 		property.Setter( property.Value );
 	}
 
+	public static async Task<object> InvokeOnHost( WrappedMethod<Task<object>> method, params object[] args )
+	{
+		if ( method.Object is InventoryItem { Inventory: not null } item )
+		{
+			item.Caller = Rpc.Caller ?? Connection.Local;
+
+			try
+			{
+				if ( Connection.Local.IsHost )
+				{
+					return await method.Resume();
+				}
+
+				var message = new InventoryItemInvoke( item.Inventory.InventoryId, item.Id, method.MethodIdentity, args );
+				return await item.Inventory.Network.InvokeOnHostAsync( message );
+			}
+			finally
+			{
+				item.Caller = null;
+			}
+		}
+
+		if ( method.Object is not BaseInventory inventory )
+			return await method.Resume();
+
+		{
+			inventory.Caller = Rpc.Caller ?? Connection.Local;
+
+			try
+			{
+				if ( Connection.Local.IsHost )
+				{
+					return await method.Resume();
+				}
+
+				var message = new InventoryInvoke( inventory.InventoryId, method.MethodIdentity, args );
+				return await inventory.Network.InvokeOnHostAsync( message );
+			}
+			finally
+			{
+				inventory.Caller = null;
+			}
+		}
+	}
+
+	private static void InvokeOnHost( WrappedMethod method, params object[] args )
+	{
+		if ( method.Object is InventoryItem { Inventory: not null } item )
+		{
+			item.Caller = Rpc.Caller ?? Connection.Local;
+
+			try
+			{
+				if ( Connection.Local.IsHost )
+				{
+					method.Resume();
+					return;
+				}
+
+				var message = new InventoryItemInvoke( item.Inventory.InventoryId, item.Id, method.MethodIdentity, args );
+				item.Inventory.Network.InvokeOnHost( message );
+			}
+			finally
+			{
+				item.Caller = null;
+			}
+		}
+
+		if ( method.Object is not BaseInventory inventory )
+		{
+			method.Resume();
+			return;
+		}
+
+		{
+			inventory.Caller = Rpc.Caller ?? Connection.Local;
+
+			try
+			{
+				if ( Connection.Local.IsHost )
+				{
+					method.Resume();
+					return;
+				}
+
+				var message = new InventoryInvoke( inventory.InventoryId, method.MethodIdentity, args );
+				inventory.Network.InvokeOnHost( message );
+			}
+			finally
+			{
+				inventory.Caller = null;
+			}
+		}
+	}
+
 	/// <summary>
 	/// Unique identifier for this item.
 	/// </summary>
@@ -35,6 +131,12 @@ public abstract class InventoryItem
 	/// The inventory that this item belongs to.
 	/// </summary>
 	public BaseInventory Inventory { get; internal set; }
+
+	/// <summary>
+	/// When inside a method with the <see cref="HostAttribute"/> this will be the <see cref="Connection"/>
+	/// that called the method remotely.
+	/// </summary>
+	public Connection Caller { get; internal set; }
 
 	/// <summary>
 	/// Size in cells. Override for non-1x1 items.
