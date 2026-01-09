@@ -27,7 +27,7 @@ public abstract class InventoryItem
 		property.Setter( property.Value );
 	}
 
-	public static async Task<object> InvokeOnHost( WrappedMethod<Task<object>> method, params object[] args )
+	public static async Task<T> InvokeOnHost<T>( WrappedMethod<Task<T>> method, params object[] args )
 	{
 		if ( method.Object is InventoryItem { Inventory: not null } item )
 		{
@@ -41,7 +41,7 @@ public abstract class InventoryItem
 				}
 
 				var message = new InventoryItemInvoke( item.Inventory.InventoryId, item.Id, method.MethodIdentity, args );
-				return await item.Inventory.Network.InvokeOnHostAsync( message );
+				return await item.Inventory.Network.InvokeOnHostAsync<InventoryItemInvoke, T>( message );
 			}
 			finally
 			{
@@ -63,7 +63,7 @@ public abstract class InventoryItem
 				}
 
 				var message = new InventoryInvoke( inventory.InventoryId, method.MethodIdentity, args );
-				return await inventory.Network.InvokeOnHostAsync( message );
+				return await inventory.Network.InvokeOnHostAsync<InventoryInvoke, T>( message );
 			}
 			finally
 			{

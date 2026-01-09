@@ -144,13 +144,13 @@ public class NetworkedInventory
 		SendToHost( Guid.Empty, message );
 	}
 
-	internal async Task<object> InvokeOnHostAsync<T>( T message ) where T : struct
+	internal async Task<R> InvokeOnHostAsync<T, R>( T message ) where T : struct
 	{
 		var requestId = Guid.NewGuid();
 		var tcs = new TaskCompletionSource<object>();
 		_pendingInvocations[requestId] = tcs;
 
-		SendToHost( requestId, message );
+		SendToHostWithReturn<T, R>( requestId, message );
 
 		var timeoutTask = GameTask.Delay( RequestTimeoutMs );
 		var completedTask = GameTask.WhenAny( tcs.Task, timeoutTask );
@@ -158,10 +158,17 @@ public class NetworkedInventory
 		await completedTask;
 
 		if ( completedTask != timeoutTask )
-			return await tcs.Task;
+		{
+			var result = await tcs.Task;
+
+			if ( result is null )
+				return default;
+
+			return (R)result;
+		}
 
 		_pendingInvocations.Remove( requestId );
-		return null;
+		return default;
 	}
 
 	private async Task<InventoryResult> SendRequest<T>( T message ) where T : struct
@@ -300,13 +307,22 @@ public class NetworkedInventory
 		SendToConnection( connectionId, message );
 	}
 
+	internal void SendToHostWithReturn<T, R>( Guid requestId, T message ) where T : struct
+	{
+		if ( Connection.Local.IsHost )
+			return;
+
+		var serialized = TypeLibrary.ToBytes( message );
+		ReceiveInvocationFromClient<R>( _inventory.InventoryId, requestId, serialized );
+	}
+
 	internal void SendToHost<T>( Guid requestId, T message ) where T : struct
 	{
 		if ( Connection.Local.IsHost )
 			return;
 
 		var serialized = TypeLibrary.ToBytes( message );
-		ReceiveMessageFromClient( _inventory.InventoryId, requestId, serialized );
+		ReceiveRequestFromClient( _inventory.InventoryId, requestId, serialized );
 	}
 
 	/// <summary>
@@ -486,7 +502,7 @@ public class NetworkedInventory
 	}
 
 	[Rpc.Host]
-	private static void ReceiveMessageFromClient( Guid inventoryId, Guid requestId, byte[] data )
+	private static async void ReceiveInvocationFromClient<T>( Guid inventoryId, Guid requestId, byte[] data )
 	{
 		var message = TypeLibrary.FromBytes<object>( data );
 
@@ -495,12 +511,13 @@ public class NetworkedInventory
 
 		if ( message is InventoryItemInvoke itemInvokeMsg )
 		{
-			var result = HandleInventoryItemInvoke( inventory, itemInvokeMsg );
+			var caller = Rpc.Caller;
+			var result = await HandleInventoryItemInvoke<T>( inventory, itemInvokeMsg );
 
 			if ( requestId == Guid.Empty )
 				return;
 
-			using ( Rpc.FilterInclude( Rpc.Caller ) )
+			using ( Rpc.FilterInclude( caller ) )
 			{
 				ReceiveInvocationResult( inventoryId, requestId, result );
 			}
@@ -508,9 +525,11 @@ public class NetworkedInventory
 			return;
 		}
 
-		if ( message is InventoryInvoke inventoryInvokeMsg )
+		if ( message is not InventoryInvoke inventoryInvokeMsg )
+			return;
+
 		{
-			var result = HandleInventoryInvoke( inventory, inventoryInvokeMsg );
+			var result = HandleInventoryInvoke<T>( inventory, inventoryInvokeMsg );
 
 			if ( requestId == Guid.Empty )
 				return;
@@ -519,9 +538,16 @@ public class NetworkedInventory
 			{
 				ReceiveInvocationResult( inventoryId, requestId, result );
 			}
-
-			return;
 		}
+	}
+
+	[Rpc.Host]
+	private static void ReceiveRequestFromClient( Guid inventoryId, Guid requestId, byte[] data )
+	{
+		var message = TypeLibrary.FromBytes<object>( data );
+
+		if ( !InventorySystem.TryFind( inventoryId, out var inventory ) )
+			return;
 
 		if ( inventory.Network.Mode == NetworkMode.Subscribers && !inventory.Subscribers.Contains( Rpc.CallerId ) )
 			return;
@@ -546,7 +572,7 @@ public class NetworkedInventory
 		}
 	}
 
-	private static object HandleInventoryItemInvoke( BaseInventory inventory, InventoryItemInvoke msg )
+	private static Task<T> HandleInventoryItemInvoke<T>( BaseInventory inventory, InventoryItemInvoke msg )
 	{
 		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
 		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
@@ -555,9 +581,9 @@ public class NetworkedInventory
 
 		try
 		{
-			if ( method.ReturnType != typeof( void ) )
+			if ( method.ReturnType == typeof( Task<T> ) )
 			{
-				return method.InvokeWithReturn<object>( item, msg.Args );
+				return method.InvokeWithReturn<Task<T>>( item, msg.Args );
 			}
 
 			method.Invoke( item, msg.Args );
@@ -569,7 +595,7 @@ public class NetworkedInventory
 		}
 	}
 
-	private static object HandleInventoryInvoke( BaseInventory inventory, InventoryInvoke msg )
+	private static Task<T> HandleInventoryInvoke<T>( BaseInventory inventory, InventoryInvoke msg )
 	{
 		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
 
@@ -577,9 +603,9 @@ public class NetworkedInventory
 
 		try
 		{
-			if ( method.ReturnType != typeof( void ) )
+			if ( method.ReturnType.IsAssignableTo( typeof( Task<> ) ) )
 			{
-				return method.InvokeWithReturn<object>( inventory, msg.Args );
+				return method.InvokeWithReturn<Task<T>>( inventory, msg.Args );
 			}
 
 			method.Invoke( inventory, msg.Args );
