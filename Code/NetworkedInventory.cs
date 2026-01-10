@@ -13,6 +13,7 @@ public class NetworkedInventory
 {
 	private readonly BaseInventory _inventory;
 	private readonly Dictionary<Guid, TaskCompletionSource<InventoryResult>> _pendingRequests = new();
+	private readonly Dictionary<Guid, TaskCompletionSource<object>> _pendingInvocations = new();
 	private const int RequestTimeoutMs = 5000;
 
 	/// <summary>
@@ -154,6 +155,38 @@ public class NetworkedInventory
 		return await SendRequest( new InventoryConsolidateRequest() );
 	}
 
+	internal void InvokeOnHost<T>( T message ) where T : struct
+	{
+		SendToHost( Guid.Empty, message );
+	}
+
+	internal async Task<R> InvokeOnHostAsync<T, R>( T message ) where T : struct
+	{
+		var requestId = Guid.NewGuid();
+		var tcs = new TaskCompletionSource<object>();
+		_pendingInvocations[requestId] = tcs;
+
+		SendToHostWithReturn<T, R>( requestId, message );
+
+		var timeoutTask = GameTask.Delay( RequestTimeoutMs );
+		var completedTask = GameTask.WhenAny( tcs.Task, timeoutTask );
+
+		await completedTask;
+
+		if ( completedTask != timeoutTask )
+		{
+			var result = await tcs.Task;
+
+			if ( result is null )
+				return default;
+
+			return (R)result;
+		}
+
+		_pendingInvocations.Remove( requestId );
+		return default;
+	}
+
 	private async Task<InventoryResult> SendRequest<T>( T message ) where T : struct
 	{
 		var requestId = Guid.NewGuid();
@@ -172,6 +205,15 @@ public class NetworkedInventory
 
 		_pendingRequests.Remove( requestId );
 		return InventoryResult.RequestTimeout;
+	}
+
+	internal void HandleInvocationResult( Guid requestId, object result )
+	{
+		if ( !_pendingInvocations.TryGetValue( requestId, out var tcs ) )
+			return;
+
+		tcs.SetResult( result );
+		_pendingInvocations.Remove( requestId );
 	}
 
 	internal void HandleActionResult( Guid requestId, InventoryResult result )
@@ -278,17 +320,25 @@ public class NetworkedInventory
 
 		var typeId = TypeLibrary.GetType( _inventory.GetType() ).Identity;
 		var message = new InventoryStateSync( typeId, _inventory.Width, _inventory.Height, _inventory.SlotMode, entries );
-		Log.Info( "Send InventoryStateSync for " +  _inventory.InventoryId );
 		SendToConnection( connectionId, message );
 	}
 
-	private void SendToHost<T>( Guid requestId, T message ) where T : struct
+	internal void SendToHostWithReturn<T, R>( Guid requestId, T message ) where T : struct
 	{
 		if ( Connection.Local.IsHost )
 			return;
 
 		var serialized = TypeLibrary.ToBytes( message );
-		ReceiveMessageFromClient( _inventory.InventoryId, requestId, serialized );
+		ReceiveInvocationFromClient<R>( _inventory.InventoryId, requestId, serialized );
+	}
+
+	internal void SendToHost<T>( Guid requestId, T message ) where T : struct
+	{
+		if ( Connection.Local.IsHost )
+			return;
+
+		var serialized = TypeLibrary.ToBytes( message );
+		ReceiveRequestFromClient( _inventory.InventoryId, requestId, serialized );
 	}
 
 	/// <summary>
@@ -468,7 +518,47 @@ public class NetworkedInventory
 	}
 
 	[Rpc.Host]
-	private static void ReceiveMessageFromClient( Guid inventoryId, Guid requestId, byte[] data )
+	private static async void ReceiveInvocationFromClient<T>( Guid inventoryId, Guid requestId, byte[] data )
+	{
+		var message = TypeLibrary.FromBytes<object>( data );
+
+		if ( !InventorySystem.TryFind( inventoryId, out var inventory ) )
+			return;
+
+		if ( message is InventoryItemInvoke itemInvokeMsg )
+		{
+			var caller = Rpc.Caller;
+			var result = await HandleInventoryItemInvoke<T>( inventory, itemInvokeMsg );
+
+			if ( requestId == Guid.Empty )
+				return;
+
+			using ( Rpc.FilterInclude( caller ) )
+			{
+				ReceiveInvocationResult( inventoryId, requestId, result );
+			}
+
+			return;
+		}
+
+		if ( message is not InventoryInvoke inventoryInvokeMsg )
+			return;
+
+		{
+			var result = HandleInventoryInvoke<T>( inventory, inventoryInvokeMsg );
+
+			if ( requestId == Guid.Empty )
+				return;
+
+			using ( Rpc.FilterInclude( Rpc.Caller ) )
+			{
+				ReceiveInvocationResult( inventoryId, requestId, result );
+			}
+		}
+	}
+
+	[Rpc.Host]
+	private static void ReceiveRequestFromClient( Guid inventoryId, Guid requestId, byte[] data )
 	{
 		var message = TypeLibrary.FromBytes<object>( data );
 
@@ -494,6 +584,51 @@ public class NetworkedInventory
 		using ( Rpc.FilterInclude( Rpc.Caller ) )
 		{
 			ReceiveActionResult( inventoryId, requestId, result );
+		}
+	}
+
+	private static Task<T> HandleInventoryItemInvoke<T>( BaseInventory inventory, InventoryItemInvoke msg )
+	{
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
+
+		item.Caller = Rpc.Caller;
+
+		try
+		{
+			if ( method.ReturnType == typeof( Task<T> ) )
+			{
+				return method.InvokeWithReturn<Task<T>>( item, msg.Args );
+			}
+
+			method.Invoke( item, msg.Args );
+			return null;
+		}
+		finally
+		{
+			item.Caller = null;
+		}
+	}
+
+	private static Task<T> HandleInventoryInvoke<T>( BaseInventory inventory, InventoryInvoke msg )
+	{
+		var method = TypeLibrary.GetMemberByIdent( msg.MethodId ) as MethodDescription;
+
+		inventory.Caller = Rpc.Caller;
+
+		try
+		{
+			if ( method.ReturnType.IsAssignableTo( typeof( Task<> ) ) )
+			{
+				return method.InvokeWithReturn<Task<T>>( inventory, msg.Args );
+			}
+
+			method.Invoke( inventory, msg.Args );
+			return null;
+		}
+		finally
+		{
+			inventory.Caller = null;
 		}
 	}
 
@@ -553,6 +688,15 @@ public class NetworkedInventory
 	private static InventoryResult HandleConsolidateRequest( BaseInventory inventory, InventoryConsolidateRequest msg )
 	{
 		return inventory.TryConsolidateStacks();
+	}
+
+	[Rpc.Broadcast]
+	private static void ReceiveInvocationResult( Guid inventoryId, Guid requestId, object result )
+	{
+		if ( InventorySystem.TryFind( inventoryId, out var inventory ) )
+		{
+			inventory.Network.HandleInvocationResult( requestId, result );
+		}
 	}
 
 	[Rpc.Broadcast]
@@ -723,6 +867,36 @@ public struct InventoryItemDataChangedList
 	public InventoryItemDataChangedList( InventoryItemDataChanged[] list )
 	{
 		List = list;
+	}
+}
+
+public struct InventoryItemInvoke
+{
+	public Guid InventoryId;
+	public Guid ItemId;
+	public int MethodId;
+	public object[] Args;
+
+	public InventoryItemInvoke( Guid inventoryId, Guid itemId, int methodId, params object[] args )
+	{
+		InventoryId = inventoryId;
+		ItemId = itemId;
+		MethodId = methodId;
+		Args = args;
+	}
+}
+
+public struct InventoryInvoke
+{
+	public Guid InventoryId;
+	public int MethodId;
+	public object[] Args;
+
+	public InventoryInvoke( Guid inventoryId, int methodId, params object[] args )
+	{
+		InventoryId = inventoryId;
+		MethodId = methodId;
+		Args = args;
 	}
 }
 
