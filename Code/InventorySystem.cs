@@ -8,7 +8,7 @@ namespace Conna.Inventory;
 /// <summary>
 /// A <see cref="GameObjectSystem"/> that contains all registered inventories.
 /// </summary>
-public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INetworkListener
+public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INetworkSnapshot
 {
 	private readonly Dictionary<Guid, BaseInventory> _inventories = [];
 	private readonly HashSet<BaseInventory> _dirtyInventories = [];
@@ -61,17 +61,39 @@ public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INet
 		system._dirtyInventories.Remove( inventory );
 	}
 
-	void Component.INetworkListener.OnActive( Connection connection )
+	void Component.INetworkSnapshot.ReadSnapshot( ref ByteStream bs )
 	{
-		if ( !Connection.Local.IsHost )
-			return;
+		var count = bs.Read<int>();
 
-		foreach ( var inventory in _inventories.Values )
+		for ( var i = 0; i < count; i++ )
 		{
-			if ( inventory.Network.Mode == NetworkMode.Subscribers )
-				continue;
+			var inventoryId = bs.Read<Guid>();
+			var data = bs.ReadArray<byte>( 1024 * 1024 * 16 );
+			var state = TypeLibrary.FromBytes<InventoryStateSync>( data );
 
-			inventory.Network.SendFullStateTo( connection.Id );
+			if ( !TryFind( inventoryId, out var inventory ) )
+			{
+				var typeDescription = TypeLibrary.GetTypeByIdent( state.TypeId );
+				inventory = GetOrCreate( typeDescription, inventoryId, state.Width, state.Height, state.SlotMode );
+				inventory.Network.Enabled = true;
+			}
+
+			inventory.Network.UpdateState( state );
+		}
+	}
+
+	void Component.INetworkSnapshot.WriteSnapshot( ref ByteStream bs )
+	{
+		var inventories = _inventories.Values.Where( x => x.Network.Mode == NetworkMode.Global ).ToArray();
+
+		bs.Write( inventories.Length );
+
+		foreach ( var inventory in inventories )
+		{
+			var state = inventory.Network.SerializeState();
+			var serialized = TypeLibrary.ToBytes( state );
+			bs.Write( inventory.InventoryId );
+			bs.WriteArray( serialized );
 		}
 	}
 

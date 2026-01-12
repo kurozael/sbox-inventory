@@ -287,6 +287,35 @@ public class NetworkedInventory
 		if ( !Connection.Local.IsHost )
 			return;
 
+		var state = SerializeState();
+		SendToConnection( connectionId, state );
+	}
+
+	internal void UpdateState( InventoryStateSync state )
+	{
+		_inventory.ExecuteWithoutAuthority( () =>
+		{
+			var existingItems = _inventory.Entries.Select( e => e.Item ).ToList();
+			foreach ( var item in existingItems )
+			{
+				_inventory.TryRemove( item );
+			}
+
+			foreach ( var entry in state.Entries )
+			{
+				var item = entry.CreateItem();
+				if ( item == null ) return;
+
+				item.Id = entry.ItemId;
+				item.Deserialize( entry.Metadata );
+
+				_inventory.TryAddAt( item, entry.X, entry.Y );
+			}
+		});
+	}
+
+	internal InventoryStateSync SerializeState()
+	{
 		var entries = _inventory.Entries.Select( e =>
 		{
 			var metadata = new Dictionary<string, object>();
@@ -303,8 +332,7 @@ public class NetworkedInventory
 		} ).ToList();
 
 		var typeId = TypeLibrary.GetType( _inventory.GetType() ).Identity;
-		var message = new InventoryStateSync( typeId, _inventory.Width, _inventory.Height, _inventory.SlotMode, entries );
-		SendToConnection( connectionId, message );
+		return new InventoryStateSync( typeId, _inventory.Width, _inventory.Height, _inventory.SlotMode, entries );
 	}
 
 	internal void SendToHostWithReturn<T, R>( Guid requestId, T message ) where T : struct
@@ -480,25 +508,7 @@ public class NetworkedInventory
 
 	private static void HandleStateSync( BaseInventory inventory, InventoryStateSync msg )
 	{
-		inventory.ExecuteWithoutAuthority( () =>
-		{
-			var existingItems = inventory.Entries.Select( e => e.Item ).ToList();
-			foreach ( var item in existingItems )
-			{
-				inventory.TryRemove( item );
-			}
-
-			foreach ( var entry in msg.Entries )
-			{
-				var item = entry.CreateItem();
-				if ( item == null ) return;
-
-				item.Id = entry.ItemId;
-				item.Deserialize( entry.Metadata );
-
-				inventory.TryAddAt( item, entry.X, entry.Y );
-			}
-		});
+		inventory.Network.UpdateState( msg );
 	}
 
 	[Rpc.Host]
