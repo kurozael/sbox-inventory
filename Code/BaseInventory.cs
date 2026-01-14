@@ -158,6 +158,34 @@ public abstract class BaseInventory : IDisposable
 	protected virtual bool CanPlaceAt( InventoryItem item, int x, int y, int w, int h ) => true;
 	protected virtual bool CanStack( InventoryItem a, InventoryItem b ) => a.CanStackWith( b );
 
+	/// <summary>
+	/// Called when an item is dropped onto another item within this inventory.
+	/// Override to implement inventory-wide custom behaviors.
+	/// By default, delegates to the target item's TryInteractWith method.
+	/// Return true to consume the interaction and prevent default stacking/swapping.
+	/// </summary>
+	/// <param name="source">The item being dropped.</param>
+	/// <param name="target">The item being dropped onto.</param>
+	/// <param name="result">The result of the interaction.</param>
+	/// <returns>True if the interaction was handled, false to continue with default behavior.</returns>
+	protected virtual bool TryItemInteraction( InventoryItem source, InventoryItem target, out InventoryResult result )
+	{
+		return target.TryInteractWith( source, this, out result );
+	}
+
+	/// <summary>
+	/// Checks if a dropped item can potentially interact with a target item.
+	/// Used for UI preview validation.
+	/// By default, delegates to the target item's CanInteractWith method.
+	/// </summary>
+	/// <param name="source">The item being dropped.</param>
+	/// <param name="target">The item being dropped onto.</param>
+	/// <returns>True if the items can interact.</returns>
+	public virtual bool CanInteractWith( InventoryItem source, InventoryItem target )
+	{
+		return target.CanInteractWith( source, this );
+	}
+
 	public bool Contains( InventoryItem item ) => item is not null && _entries.ContainsKey( item.Id );
 
 	/// <summary>
@@ -395,6 +423,9 @@ public abstract class BaseInventory : IDisposable
 		if ( itemsAtTarget.Count == 1 )
 		{
 			var other = itemsAtTarget[0];
+
+			if ( CanInteractWith( item, other ) )
+				return true;
 
 			if ( item.CanStackWith( other ) && other.SpaceLeftInStack() > 0 )
 				return true;
@@ -1132,6 +1163,17 @@ public abstract class BaseInventory : IDisposable
 
 		var targetItem = itemsAtTarget[0];
 
+		if ( destination.TryItemInteraction( item, targetItem, out var interactionResult ) )
+		{
+			if ( interactionResult == InventoryResult.ItemNotInInventory && destination != this )
+			{
+				var removeResult = TryRemove( item );
+				return removeResult == InventoryResult.Success ? InventoryResult.Success : removeResult;
+			}
+
+			return interactionResult;
+		}
+
 		if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 		{
 			var result = TryTransferTo( item, destination );
@@ -1176,6 +1218,9 @@ public abstract class BaseInventory : IDisposable
 			return InventoryResult.PlacementCollision;
 
 		var targetItem = itemsAtTarget[0];
+
+		if ( TryItemInteraction( item, targetItem, out var interactionResult ) )
+			return interactionResult;
 
 		if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
 		{
@@ -1383,8 +1428,66 @@ public abstract class BaseInventory : IDisposable
 	public InventoryResult TrySplitAndTransferTo( InventoryItem item, int splitAmount, BaseInventory destination, out InventoryItem transferred )
 		=> TryTakeAndTransferTo( item, splitAmount, destination, out transferred );
 
-	public InventoryResult TrySplitAndTransferToAt( InventoryItem item, int splitAmount, BaseInventory destination, int x, int y, out InventoryItem transferred )
-		=> TryTakeAndTransferToAt( item, splitAmount, destination, x, y, out transferred );
+		public InventoryResult TrySplitAndTransferToAt( InventoryItem item, int splitAmount, BaseInventory destination, int x, int y, out InventoryItem transferred )
+		{
+			transferred = null;
+
+			// Check ownership for networked inventories
+			if ( !HasAuthority )
+				return InventoryResult.NoAuthority;
+
+			if ( destination is null )
+				return InventoryResult.DestinationWasNull;
+
+			if ( item is null )
+				return InventoryResult.ItemWasNull;
+
+			if ( !_entries.TryGetValue( item.Id, out _ ) )
+				return InventoryResult.ItemNotInInventory;
+
+			var destEffectiveW = destination.GetEffectiveWidth( item );
+			var destEffectiveH = destination.GetEffectiveHeight( item );
+			var itemsAtTarget = destination.GetItemsInRect( x, y, destEffectiveW, destEffectiveH );
+
+			if ( itemsAtTarget.Count == 0 )
+				return TryTakeAndTransferToAt( item, splitAmount, destination, x, y, out transferred );
+
+			if ( itemsAtTarget.Count != 1 )
+				return InventoryResult.PlacementCollision;
+
+			var targetItem = itemsAtTarget[0];
+
+			var takeResult = TryTake( item, splitAmount, out var taken );
+			if ( takeResult != InventoryResult.Success )
+				return takeResult;
+
+			if ( destination.TryItemInteraction( taken, targetItem, out var interactionResult ) )
+			{
+				if ( interactionResult == InventoryResult.ItemNotInInventory )
+					return InventoryResult.Success;
+
+				if ( interactionResult != InventoryResult.Success )
+					RevertTake( item, taken );
+
+				return interactionResult;
+			}
+
+			RevertTake( item, taken );
+
+			if ( item.CanStackWith( targetItem ) && targetItem.SpaceLeftInStack() > 0 )
+			{
+				var amountToMove = Math.Min( splitAmount, targetItem.SpaceLeftInStack() );
+				if ( !CanTransferItemTo( taken, destination ) )
+					return InventoryResult.TransferNotAllowed;
+
+				if ( !destination.CanReceiveTransferFrom( taken, this ) )
+					return InventoryResult.ReceiveNotAllowed;
+
+				return TryCombineStacksTo( item, targetItem, destination, amountToMove, out _ );
+			}
+
+			return InventoryResult.StackingNotAllowed;
+		}
 
 	public InventoryResult TryCombineStacks( InventoryItem source, InventoryItem destination, int amount, out int moved )
 	{

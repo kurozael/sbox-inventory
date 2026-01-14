@@ -115,6 +115,22 @@ public class NetworkedInventory
 		return _inventory.TryTakeAndPlace( item, amount, slot, out _ );
 	}
 
+	public async Task<InventoryResult> TrySplitAndTransferToAt( InventoryItem item, int splitAmount, BaseInventory destination, int x, int y )
+	{
+		if ( item is null )
+			return InventoryResult.ItemWasNull;
+
+		if ( destination is null )
+			return InventoryResult.DestinationWasNull;
+
+		if ( ShouldSendRequest )
+		{
+			return await SendRequest( new InventorySplitTransferRequest( item.Id, destination.InventoryId, splitAmount, x, y ) );
+		}
+
+		return _inventory.TrySplitAndTransferToAt( item, splitAmount, destination, x, y, out _ );
+	}
+
 	public async Task<InventoryResult> TryCombineStacks( InventoryItem source, InventoryItem dest, int amount )
 	{
 		if ( ShouldSendRequest )
@@ -661,23 +677,22 @@ public class NetworkedInventory
 		if ( inventory.Network.Mode == NetworkMode.Subscribers && !inventory.Subscribers.Contains( Rpc.CallerId ) )
 			return;
 
+		var result = message switch
 		{
-			var result = message switch
-			{
-				InventoryMoveRequest msg => HandleMoveRequest( inventory, msg ),
-				InventorySwapRequest msg => HandleSwapRequest( inventory, msg ),
-				InventoryTransferRequest msg => HandleTransferRequest( inventory, msg ),
-				InventoryTakeRequest msg => HandleTakeRequest( inventory, msg ),
-				InventoryCombineStacksRequest msg => HandleCombineStacksRequest( inventory, msg ),
-				InventoryAutoSortRequest msg => HandleAutoSortRequest( inventory, msg ),
-				InventoryConsolidateRequest msg => HandleConsolidateRequest( inventory, msg ),
-				_ => InventoryResult.InsertNotAllowed
-			};
+			InventoryMoveRequest msg => HandleMoveRequest( inventory, msg ),
+			InventorySwapRequest msg => HandleSwapRequest( inventory, msg ),
+			InventoryTransferRequest msg => HandleTransferRequest( inventory, msg ),
+			InventoryTakeRequest msg => HandleTakeRequest( inventory, msg ),
+			InventorySplitTransferRequest msg => HandleSplitTransferRequest( inventory, msg ),
+			InventoryCombineStacksRequest msg => HandleCombineStacksRequest( inventory, msg ),
+			InventoryAutoSortRequest msg => HandleAutoSortRequest( inventory, msg ),
+			InventoryConsolidateRequest msg => HandleConsolidateRequest( inventory, msg ),
+			_ => InventoryResult.InsertNotAllowed
+		};
 
-			using ( Rpc.FilterInclude( Rpc.Caller ) )
-			{
-				ReceiveActionResult( inventoryId, requestId, result );
-			}
+		using ( Rpc.FilterInclude( Rpc.Caller ) )
+		{
+			ReceiveActionResult( inventoryId, requestId, result );
 		}
 	}
 
@@ -760,6 +775,15 @@ public class NetworkedInventory
 	{
 		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
 		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryTakeAndPlace( item, msg.Amount, new InventorySlot( msg.X, msg.Y, item.Width, item.Height ), out _ );
+	}
+
+	private static InventoryResult HandleSplitTransferRequest( BaseInventory inventory, InventorySplitTransferRequest msg )
+	{
+		if ( !InventorySystem.TryFind( msg.DestinationId, out var destination ) )
+			return InventoryResult.DestinationWasNull;
+
+		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
+		return item == null ? InventoryResult.ItemNotInInventory : inventory.TrySplitAndTransferToAt( item, msg.Amount, destination, msg.X, msg.Y, out _ );
 	}
 
 	private static InventoryResult HandleCombineStacksRequest( BaseInventory inventory, InventoryCombineStacksRequest msg )
@@ -871,6 +895,24 @@ public struct InventoryCombineStacksRequest
 		SourceId = sourceId;
 		DestId = destId;
 		Amount = amount;
+	}
+}
+
+public struct InventorySplitTransferRequest
+{
+	public Guid ItemId;
+	public Guid DestinationId;
+	public int Amount;
+	public int X;
+	public int Y;
+
+	public InventorySplitTransferRequest( Guid itemId, Guid destinationId, int amount, int x, int y )
+	{
+		ItemId = itemId;
+		DestinationId = destinationId;
+		Amount = amount;
+		X = x;
+		Y = y;
 	}
 }
 
