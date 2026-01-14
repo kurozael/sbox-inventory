@@ -284,6 +284,89 @@ public abstract class BaseInventory : IDisposable
 	}
 
 	/// <summary>
+	/// Checks if an item can be transferred or swapped to the target position in another inventory.
+	/// </summary>
+	public bool CanTransferOrSwapTo( InventoryItem item, BaseInventory destination, int x, int y )
+	{
+		if ( item is null || destination is null )
+			return false;
+
+		if ( !_entries.TryGetValue( item.Id, out var entry ) )
+			return false;
+
+		// Use destination's effective size
+		var effectiveW = destination.GetEffectiveWidth( item );
+		var effectiveH = destination.GetEffectiveHeight( item );
+
+		if ( !destination.IsInBounds( x, y, effectiveW, effectiveH ) )
+			return false;
+
+		if ( !destination.CanPlaceAt( item, x, y, effectiveW, effectiveH ) )
+			return false;
+
+		var itemsAtTarget = destination.GetItemsInRect( x, y, effectiveW, effectiveH );
+
+		if ( itemsAtTarget.Count == 0 )
+			return true;
+
+		if ( itemsAtTarget.Count != 1 )
+			return false;
+
+		var other = itemsAtTarget[0];
+
+		// Check for stacking
+		if ( item.CanStackWith( other ) && other.SpaceLeftInStack() > 0 )
+			return true;
+
+		// Check if a swap is possible
+		return CanSwapBetweenItems( item, other, destination );
+	}
+
+	/// <summary>
+	/// Checks if two items from different inventories can be swapped.
+	/// </summary>
+	private bool CanSwapBetweenItems( InventoryItem itemFromThis, InventoryItem itemFromOther, BaseInventory otherInventory )
+	{
+		if ( !_entries.TryGetValue( itemFromThis.Id, out var entryThis ) )
+			return false;
+
+		if ( !otherInventory._entries.TryGetValue( itemFromOther.Id, out var entryOther ) )
+			return false;
+
+		var slotThis = entryThis.Slot;
+		var slotOther = entryOther.Slot;
+
+		// Calculate effective sizes for each item in each inventory
+		var thisEffectiveWInOther = otherInventory.GetEffectiveWidth( itemFromThis );
+		var thisEffectiveHInOther = otherInventory.GetEffectiveHeight( itemFromThis );
+		var otherEffectiveWInThis = GetEffectiveWidth( itemFromOther );
+		var otherEffectiveHInThis = GetEffectiveHeight( itemFromOther );
+
+		// Check if itemFromThis can fit at itemFromOther's position
+		if ( !otherInventory.IsInBounds( slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
+			return false;
+
+		if ( !otherInventory.CanPlaceAt( itemFromThis, slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
+			return false;
+
+		// Check if itemFromOther can fit at itemFromThis's position
+		if ( IsInBounds( slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) &&
+		     CanPlaceAt( itemFromOther, slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) )
+		{
+			return true;
+		}
+
+		// If the incoming item is larger than the vacated slot, check if there's any space
+		if ( otherEffectiveWInThis > slotThis.W || otherEffectiveHInThis > slotThis.H )
+		{
+			return TryFindPlacement( itemFromOther, out _ );
+		}
+
+		// Try to find a position within the vacated space
+		return TryFindSwapPositionForBetween( slotThis, otherEffectiveWInThis, otherEffectiveHInThis, out _ );
+	}
+
+	/// <summary>
 	/// Checks if an item can be moved or swapped to the target position.
 	/// </summary>
 	public bool CanMoveOrSwap( InventoryItem item, int x, int y )
@@ -361,9 +444,9 @@ public abstract class BaseInventory : IDisposable
 			H = effectiveHB
 		};
 		var simpleSwapWorks = IsInBounds( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
-		                      CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
-		                      !RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H,
-		                                     newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
+			CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
+			!RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H,
+				newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
 
 		if ( simpleSwapWorks )
 		{
@@ -895,7 +978,7 @@ public abstract class BaseInventory : IDisposable
 			H = otherEffectiveHInThis
 		};
 		var simpleSwapWorks = IsInBounds( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) &&
-		                      CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H );
+			CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H );
 
 		if ( !simpleSwapWorks )
 		{
@@ -1497,7 +1580,6 @@ public abstract class BaseInventory : IDisposable
 
 		if ( IsNetworked && HasAuthority )
 		{
-			Log.Info( "Broadcasting item added at " + slot.X + ", " + slot.Y + " amount=" + item.StackCount  );
 			Network.BroadcastItemAdded( new Entry( item, slot ) );
 		}
 
