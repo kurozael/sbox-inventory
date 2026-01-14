@@ -93,12 +93,16 @@ public class NetworkedInventory
 		return await SendRequest( new InventorySwapRequest( itemA.Id, itemB.Id ) );
 	}
 
-	public async Task<InventoryResult> TryTransferToAt( InventoryItem item, BaseInventory destination, int x, int y )
+	public async Task<InventoryResult> TryTransferToAt( InventoryItem item, BaseInventory destination, int x, int y, int amount = 0 )
 	{
 		if ( !ShouldSendRequest )
-			return _inventory.TryTransferToAt( item, destination, x, y );
+		{
+			return amount == 0
+				? _inventory.TryTransferToAt( item, destination, x, y )
+				: _inventory.TrySplitAndTransferToAt( item, amount, destination, x, y, out _ );
+		}
 
-		return await SendRequest( new InventoryTransferRequest( item.Id, destination.InventoryId, x, y ) );
+		return await SendRequest( new InventoryTransferRequest( item.Id, destination.InventoryId, x, y, amount ) );
 	}
 
 	public async Task<InventoryResult> TryTakeAndPlace( InventoryItem item, int amount, InventorySlot slot )
@@ -648,7 +652,13 @@ public class NetworkedInventory
 			return InventoryResult.DestinationWasNull;
 
 		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryTransferToAt( item, destination, msg.X, msg.Y );
+
+		if ( item is null )
+			return InventoryResult.ItemNotInInventory;
+
+		return msg.Amount == 0
+			? inventory.TryTransferToAt( item, destination, msg.X, msg.Y )
+			: inventory.TrySplitAndTransferToAt( item, msg.Amount, destination, msg.X, msg.Y, out _ );
 	}
 
 	private static InventoryResult HandleTakeRequest( BaseInventory inventory, InventoryTakeRequest msg )
@@ -725,13 +735,15 @@ public struct InventoryTransferRequest
 {
 	public Guid ItemId;
 	public Guid DestinationId;
+	public int Amount;
 	public int X;
 	public int Y;
 
-	public InventoryTransferRequest( Guid itemId, Guid destinationId, int x, int y )
+	public InventoryTransferRequest( Guid itemId, Guid destinationId, int x, int y, int amount = 0 )
 	{
 		ItemId = itemId;
 		DestinationId = destinationId;
+		Amount = amount;
 		X = x;
 		Y = y;
 	}
