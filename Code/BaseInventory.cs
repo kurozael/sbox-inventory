@@ -978,7 +978,8 @@ public abstract class BaseInventory : IDisposable
 			H = otherEffectiveHInThis
 		};
 		var simpleSwapWorks = IsInBounds( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) &&
-			CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H );
+			CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) &&
+			CanPlaceItemAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, itemFromThis );
 
 		if ( !simpleSwapWorks )
 		{
@@ -997,7 +998,7 @@ public abstract class BaseInventory : IDisposable
 		otherBaseInventory.ClearRect( slotOther.X, slotOther.Y, slotOther.W, slotOther.H );
 		otherBaseInventory._entries.Remove( itemFromOther.Id );
 
-		// Check for collisions in target inventory for itemFromThis
+		// Check for collisions in the target inventory for itemFromThis
 		if ( !otherBaseInventory.IsRectFree( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) )
 		{
 			// Restore original positions
@@ -1121,7 +1122,6 @@ public abstract class BaseInventory : IDisposable
 
 		var destEffectiveW = destination.GetEffectiveWidth( item );
 		var destEffectiveH = destination.GetEffectiveHeight( item );
-
 		var itemsAtTarget = destination.GetItemsInRect( x, y, destEffectiveW, destEffectiveH );
 
 		if ( itemsAtTarget.Count == 0 )
@@ -1144,7 +1144,6 @@ public abstract class BaseInventory : IDisposable
 			swappedItem = targetItem;
 
 		return swapResult;
-
 	}
 
 	/// <summary>
@@ -1237,18 +1236,17 @@ public abstract class BaseInventory : IDisposable
 
 	public InventoryResult TryTakeAndPlace( InventoryItem item, int amount, InventorySlot slot, out InventoryItem placed )
 	{
-		Log.Info( "Try take and place: " + amount  );
 		placed = null;
 
 		// Check ownership for networked inventories
 		if ( !HasAuthority )
 			return InventoryResult.NoAuthority;
 
+		TryGetSlot( item, out var originalSlot );
+
 		var result = TryTake( item, amount, out var taken );
 		if ( result != InventoryResult.Success )
 			return result;
-
-		Log.Info( "took the amount: " + amount  );
 
 		// Adjust slot size based on slot mode
 		var effectiveW = GetEffectiveWidth( taken );
@@ -1262,7 +1260,7 @@ public abstract class BaseInventory : IDisposable
 		var placeResult = PlaceItem( taken, adjustedSlot );
 		if ( placeResult != InventoryResult.Success )
 		{
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 			return placeResult;
 		}
 
@@ -1281,20 +1279,22 @@ public abstract class BaseInventory : IDisposable
 		if ( destination is null )
 			return InventoryResult.DestinationWasNull;
 
+		TryGetSlot( item, out var originalSlot );
+
 		var result = TryTake( item, amount, out var taken );
 		if ( result != InventoryResult.Success )
 			return result;
 
 		if ( !CanTransferItemTo( taken, destination ) || !destination.CanReceiveTransferFrom( taken, this ) )
 		{
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 			return InventoryResult.TransferNotAllowed;
 		}
 
 		var transferResult = destination.TryAdd( taken );
 		if ( transferResult != InventoryResult.Success )
 		{
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 			return transferResult;
 		}
 
@@ -1313,13 +1313,15 @@ public abstract class BaseInventory : IDisposable
 		if ( destination is null )
 			return InventoryResult.DestinationWasNull;
 
+		TryGetSlot( item, out var originalSlot );
+
 		var result = TryTake( item, amount, out var taken );
 		if ( result != InventoryResult.Success )
 			return result;
 
 		if ( !CanTransferItemTo( taken, destination ) || !destination.CanReceiveTransferFrom( taken, this ) )
 		{
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 			return InventoryResult.TransferNotAllowed;
 		}
 
@@ -1344,7 +1346,7 @@ public abstract class BaseInventory : IDisposable
 				}
 
 				// Put the remainder back in the source
-				RevertTake( item, taken );
+				RevertTake( item, taken, originalSlot );
 				return InventoryResult.Success;
 			}
 		}
@@ -1353,7 +1355,7 @@ public abstract class BaseInventory : IDisposable
 		if ( itemAtTarget != null )
 		{
 			// Put the taken item back first
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 
 			// Now try a proper swap using the full item
 			var swapResult = TrySwapBetween( item, itemAtTarget, destination );
@@ -1367,7 +1369,7 @@ public abstract class BaseInventory : IDisposable
 		var transferResult = destination.TryAddAt( taken, x, y );
 		if ( transferResult != InventoryResult.Success )
 		{
-			RevertTake( item, taken );
+			RevertTake( item, taken, originalSlot );
 			return transferResult;
 		}
 
@@ -1587,9 +1589,10 @@ public abstract class BaseInventory : IDisposable
 		return InventoryResult.Success;
 	}
 
-	private void RevertTake( InventoryItem original, InventoryItem taken )
+	private void RevertTake( InventoryItem original, InventoryItem taken, InventorySlot originalSlot )
 	{
-		if ( original is null || taken is null ) return;
+		if ( original is null || taken is null )
+			return;
 
 		if ( Contains( original ) )
 		{
@@ -1598,7 +1601,10 @@ public abstract class BaseInventory : IDisposable
 		}
 		else
 		{
-			TryAdd( original );
+			var result = TryAddAt( original, originalSlot.X, originalSlot.Y );
+
+			if ( result != InventoryResult.Success )
+				TryAdd( original );
 		}
 	}
 
