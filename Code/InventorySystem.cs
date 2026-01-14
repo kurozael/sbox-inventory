@@ -25,6 +25,16 @@ public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INet
 
 	/// <summary>
 	/// Get an inventory by its unique ID, or create a new one and register it for networking if one cannot be found. Inventories
+	/// created this way will be networked by default. The inventory type used must contain a constructor taking only an ID.
+	/// </summary>
+	public static T GetOrCreate<T>( Guid id ) where T : BaseInventory
+	{
+		var typeDescription = TypeLibrary.GetType<T>();
+		return GetOrCreate( typeDescription, id ) as T;
+	}
+
+	/// <summary>
+	/// Get an inventory by its unique ID, or create a new one and register it for networking if one cannot be found. Inventories
 	/// created this way will be networked by default.
 	/// </summary>
 	public static BaseInventory GetOrCreate( TypeDescription typeDescription, Guid id, int width, int height, InventorySlotMode slotMode = InventorySlotMode.Tetris )
@@ -41,6 +51,30 @@ public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INet
 		catch ( Exception )
 		{
 			inventory = typeDescription.Create<BaseInventory>( [id] );
+		}
+
+		inventory.Network.Enabled = true;
+		return inventory;
+	}
+
+	/// <summary>
+	/// Get an inventory by its unique ID, or create a new one and register it for networking if one cannot be found. Inventories
+	/// created this way will be networked by default. The inventory type used must contain a constructor taking only an ID.
+	/// </summary>
+	public static BaseInventory GetOrCreate( TypeDescription typeDescription, Guid id )
+	{
+		if ( TryFind( id, out var inventory ) )
+			return inventory;
+
+		// This is a bit shitty, but we'll try to find a constructor that takes the width and height parameters.
+		// If we can't find one, we'll fall back to a constructor that takes only the ID.
+		try
+		{
+			inventory = typeDescription.Create<BaseInventory>( [id] );
+		}
+		catch ( Exception e )
+		{
+			Log.Error( e );
 		}
 
 		inventory.Network.Enabled = true;
@@ -143,6 +177,7 @@ public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INet
 	{
 		var system = Current;
 		if ( system is null ) return;
+		if ( baseInventory is null ) return;
 
 		system._dirtyInventories.Remove( baseInventory );
 		system._inventories.Remove( baseInventory.InventoryId );

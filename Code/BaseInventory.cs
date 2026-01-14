@@ -323,7 +323,7 @@ public abstract class BaseInventory : IDisposable
 	}
 
 	/// <summary>
-	/// Checks if two items can be swapped (each fits in the other's position).
+	/// Checks if two items can be swapped without collisions.
 	/// </summary>
 	private bool CanSwapItems( InventoryItem itemA, InventoryItem itemB )
 	{
@@ -341,41 +341,116 @@ public abstract class BaseInventory : IDisposable
 		var effectiveWB = GetEffectiveWidth( itemB );
 		var effectiveHB = GetEffectiveHeight( itemB );
 
+		// Check if itemA can fit at itemB's position
 		if ( !IsInBounds( slotB.X, slotB.Y, effectiveWA, effectiveHA ) )
-			return false;
-
-		if ( !IsInBounds( slotA.X, slotA.Y, effectiveWB, effectiveHB ) )
 			return false;
 
 		if ( !CanPlaceAt( itemA, slotB.X, slotB.Y, effectiveWA, effectiveHA ) )
 			return false;
 
-		if ( !CanPlaceAt( itemB, slotA.X, slotA.Y, effectiveWB, effectiveHB ) )
+		var newSlotA = slotB with
+		{
+			W = effectiveWA,
+			H = effectiveHA
+		};
+
+		// Check if itemB can fit at itemA's origin (simple case)
+		var newSlotB = slotA with
+		{
+			W = effectiveWB,
+			H = effectiveHB
+		};
+		var simpleSwapWorks = IsInBounds( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
+		                      CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
+		                      !RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H,
+		                                     newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
+
+		if ( simpleSwapWorks )
+		{
+			// Verify no collision with other items
+			return !HasSwapCollisionWithOtherItems( itemA, itemB, newSlotA, newSlotB );
+		}
+
+		// Try to find an alternative position for itemB within itemA's vacated space
+		if ( !TryFindSwapPosition( slotA, newSlotA, effectiveWB, effectiveHB, out newSlotB ) )
 			return false;
 
-		var newSlotA = new InventorySlot( slotB.X, slotB.Y, effectiveWA, effectiveHA );
-		var newSlotB = new InventorySlot( slotA.X, slotA.Y, effectiveWB, effectiveHB );
+		if ( !CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
+			return false;
 
-		var aOverlapsB = RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
+		return !HasSwapCollisionWithOtherItems( itemA, itemB, newSlotA, newSlotB );
+	}
 
-		if ( !aOverlapsB )
+	/// <summary>
+	/// Checks if the new positions for swapped items would collide with any other items in the inventory.
+	/// </summary>
+	private bool HasSwapCollisionWithOtherItems( InventoryItem itemA, InventoryItem itemB, InventorySlot newSlotA, InventorySlot newSlotB )
+	{
+		foreach ( var (inventoryItem, s) in _entries.Values )
 		{
-			foreach ( var (inventoryItem, s) in _entries.Values )
+			if ( inventoryItem.Id == itemA.Id || inventoryItem.Id == itemB.Id )
+				continue;
+
+			if ( RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, s.X, s.Y, s.W, s.H ) )
+				return true;
+
+			if ( RectsOverlap( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H, s.X, s.Y, s.W, s.H ) )
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Finds a valid position for the swapped item within the vacated space, ensuring it doesn't
+	/// overlap with the moving item's new position.
+	/// </summary>
+	private bool TryFindSwapPosition( InventorySlot vacatedSlot, InventorySlot newSlotA, int itemWidth, int itemHeight, out InventorySlot newSlotB )
+	{
+		// Search within the bounds of the vacated slot for a valid position
+		var searchMinX = Math.Max( 0, vacatedSlot.X - itemWidth + 1 );
+		var searchMaxX = Math.Min( Width - itemWidth, vacatedSlot.X + vacatedSlot.W - 1 );
+		var searchMinY = Math.Max( 0, vacatedSlot.Y - itemHeight + 1 );
+		var searchMaxY = Math.Min( Height - itemHeight, vacatedSlot.Y + vacatedSlot.H - 1 );
+
+		// Prefer positions that keep the item within the vacated area, starting from the origin
+		for ( var y = vacatedSlot.Y; y <= searchMaxY; y++ )
+		{
+			for ( var x = vacatedSlot.X; x <= searchMaxX; x++ )
 			{
-				if ( inventoryItem.Id == itemA.Id || inventoryItem.Id == itemB.Id )
-					continue;
-
-				if ( RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, s.X, s.Y, s.W, s.H ) )
-					return false;
-
-				if ( RectsOverlap( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H, s.X, s.Y, s.W, s.H ) )
-					return false;
+				if ( TrySwapPositionAt( x, y, itemWidth, itemHeight, newSlotA, out newSlotB ) )
+					return true;
 			}
 		}
-		else
+
+		// Try remaining positions in the extended search area
+		for ( var y = searchMinY; y <= searchMaxY; y++ )
 		{
-			return false;
+			for ( var x = searchMinX; x <= searchMaxX; x++ )
+			{
+				// Skip positions we already checked
+				if ( x >= vacatedSlot.X && y >= vacatedSlot.Y )
+					continue;
+
+				if ( TrySwapPositionAt( x, y, itemWidth, itemHeight, newSlotA, out newSlotB ) )
+					return true;
+			}
 		}
+
+		newSlotB = default;
+		return false;
+	}
+
+	private bool TrySwapPositionAt( int x, int y, int w, int h, InventorySlot newSlotA, out InventorySlot newSlotB )
+	{
+		newSlotB = new InventorySlot( x, y, w, h );
+
+		if ( !IsInBounds( x, y, w, h ) )
+			return false;
+
+		// Ensure it doesn't overlap with where the other item is going
+		if ( RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, x, y, w, h ) )
+			return false;
 
 		return true;
 	}
@@ -405,9 +480,6 @@ public abstract class BaseInventory : IDisposable
 
 		if ( item.MaxStackSize > 1 && item.StackCount > 0 )
 			MergeIntoExistingStacks( item );
-
-		var effectiveW = GetEffectiveWidth( item );
-		var effectiveH = GetEffectiveHeight( item );
 
 		while ( item.StackCount > 0 )
 		{
@@ -541,6 +613,7 @@ public abstract class BaseInventory : IDisposable
 
 	/// <summary>
 	/// Swaps the positions of two items in the same inventory.
+	/// ItemA moves to itemB's position, itemB finds a valid spot in itemA's vacated space.
 	/// </summary>
 	public InventoryResult TrySwap( InventoryItem itemA, InventoryItem itemB )
 	{
@@ -565,44 +638,75 @@ public abstract class BaseInventory : IDisposable
 		var effectiveWB = GetEffectiveWidth( itemB );
 		var effectiveHB = GetEffectiveHeight( itemB );
 
-		var newSlotA = new InventorySlot( slotB.X, slotB.Y, effectiveWA, effectiveHA );
-		var newSlotB = new InventorySlot( slotA.X, slotA.Y, effectiveWB, effectiveHB );
+		// Where itemA wants to go (itemB's current position)
+		var newSlotA = slotB with
+		{
+			W = effectiveWA,
+			H = effectiveHA
+		};
 
-		if ( !IsInBounds( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H ) ||
-		     !IsInBounds( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
+		// Check if itemA can fit at itemB's position
+		if ( !IsInBounds( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H ) )
 			return InventoryResult.PlacementOutOfBounds;
 
-		if ( !CanPlaceAt( itemA, newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H ) ||
-		     !CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
+		if ( !CanPlaceAt( itemA, newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H ) )
 			return InventoryResult.PlacementNotAllowed;
 
-		if ( RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
-			return InventoryResult.PlacementCollision;
+		// Try the simple case first: itemB goes to itemA's origin
+		var newSlotB = slotA with
+		{
+			W = effectiveWB,
+			H = effectiveHB
+		};
+		var simpleSwapWorks = IsInBounds( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
+			CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) &&
+			!RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H,
+				newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
 
+		if ( !simpleSwapWorks )
+		{
+			// Find a valid position for itemB within itemA's vacated space
+			if ( !TryFindSwapPosition( slotA, newSlotA, effectiveWB, effectiveHB, out newSlotB ) )
+				return InventoryResult.PlacementCollision;
+
+			if ( !CanPlaceAt( itemB, newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H ) )
+				return InventoryResult.PlacementNotAllowed;
+		}
+
+		// Clear both original positions
 		ClearRect( slotA.X, slotA.Y, slotA.W, slotA.H );
 		ClearRect( slotB.X, slotB.Y, slotB.W, slotB.H );
 
+		// Check for collisions with other items
 		foreach ( var (inventoryItem, s) in _entries.Values )
 		{
 			if ( inventoryItem.Id == itemA.Id || inventoryItem.Id == itemB.Id )
 				continue;
 
-			if ( !RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, s.X, s.Y, s.W, s.H ) &&
-			     !RectsOverlap( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H, s.X, s.Y, s.W, s.H ) )
+			if ( RectsOverlap( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H, s.X, s.Y, s.W, s.H ) ||
+			     RectsOverlap( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H, s.X, s.Y, s.W, s.H ) )
 			{
-				continue;
+				// Restore original positions
+				FillRect( slotA.X, slotA.Y, slotA.W, slotA.H );
+				FillRect( slotB.X, slotB.Y, slotB.W, slotB.H );
+				return InventoryResult.PlacementCollision;
 			}
-
-			FillRect( slotA.X, slotA.Y, slotA.W, slotA.H );
-			FillRect( slotB.X, slotB.Y, slotB.W, slotB.H );
-			return InventoryResult.PlacementCollision;
 		}
 
+		// Apply the swap
 		FillRect( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H );
 		FillRect( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
 
 		_entries[itemA.Id] = new Entry( itemA, newSlotA );
 		_entries[itemB.Id] = new Entry( itemB, newSlotB );
+
+		OnItemMoved?.Invoke( itemA, newSlotA.X, newSlotA.Y );
+		OnItemMoved?.Invoke( itemB, newSlotB.X, newSlotB.Y );
+
+		if ( IsNetworked && HasAuthority )
+		{
+			Network.BroadcastItemsSwapped( itemA.Id, newSlotA.X, newSlotA.Y, itemB.Id, newSlotB.X, newSlotB.Y );
+		}
 
 		OnInventoryChangedInternal();
 		return InventoryResult.Success;
@@ -649,6 +753,9 @@ public abstract class BaseInventory : IDisposable
 
 		item.OnRemoved( this );
 		OnItemRemoved?.Invoke( sourceEntry );
+
+		if ( destination != this && IsNetworked && HasAuthority )
+			Network.BroadcastItemRemoved( item.Id );
 
 		OnInventoryChangedInternal();
 		return InventoryResult.Success;
@@ -712,14 +819,16 @@ public abstract class BaseInventory : IDisposable
 		item.OnRemoved( this );
 		OnItemRemoved?.Invoke( sourceEntry );
 
-		OnInventoryChangedInternal();
+		if ( destination != this && IsNetworked && HasAuthority )
+			Network.BroadcastItemRemoved( item.Id );
 
+		OnInventoryChangedInternal();
 		return InventoryResult.Success;
 	}
 
 	/// <summary>
 	/// Swaps an item from this inventory with an item in another inventory.
-	/// Each item ends up at the other's original position.
+	/// itemFromThis moves to itemFromOther's position, itemFromOther finds a valid spot in itemFromThis's vacated space.
 	/// </summary>
 	public InventoryResult TrySwapBetween( InventoryItem itemFromThis, InventoryItem itemFromOther, BaseInventory otherBaseInventory )
 	{
@@ -766,30 +875,49 @@ public abstract class BaseInventory : IDisposable
 		var otherEffectiveWInThis = GetEffectiveWidth( itemFromOther );
 		var otherEffectiveHInThis = GetEffectiveHeight( itemFromOther );
 
-		if ( !otherBaseInventory.CanPlaceAt( itemFromThis, slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
-			return InventoryResult.PlacementNotAllowed;
+		// Where itemFromThis wants to go (itemFromOther's current position)
+		var newSlotForThis = slotOther with
+		{
+			W = thisEffectiveWInOther,
+			H = thisEffectiveHInOther
+		};
 
-		if ( !CanPlaceAt( itemFromOther, slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) )
-			return InventoryResult.PlacementNotAllowed;
-
-		if ( !otherBaseInventory.IsInBounds( slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther ) )
+		if ( !otherBaseInventory.IsInBounds( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) )
 			return InventoryResult.PlacementOutOfBounds;
 
-		if ( !IsInBounds( slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis ) )
-			return InventoryResult.PlacementOutOfBounds;
+		if ( !otherBaseInventory.CanPlaceAt( itemFromThis, newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) )
+			return InventoryResult.PlacementNotAllowed;
 
+		// Try the simple case first: itemFromOther goes to itemFromThis's origin
+		var newSlotForOther = slotThis with
+		{
+			W = otherEffectiveWInThis,
+			H = otherEffectiveHInThis
+		};
+		var simpleSwapWorks = IsInBounds( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) &&
+		                      CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H );
+
+		if ( !simpleSwapWorks )
+		{
+			// Find a valid position for itemFromOther within itemFromThis's vacated space
+			if ( !TryFindSwapPositionForBetween( slotThis, otherEffectiveWInThis, otherEffectiveHInThis, out newSlotForOther ) )
+				return InventoryResult.PlacementCollision;
+
+			if ( !CanPlaceAt( itemFromOther, newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) )
+				return InventoryResult.PlacementNotAllowed;
+		}
+
+		// Clear both original positions
 		ClearRect( slotThis.X, slotThis.Y, slotThis.W, slotThis.H );
 		_entries.Remove( itemFromThis.Id );
 
 		otherBaseInventory.ClearRect( slotOther.X, slotOther.Y, slotOther.W, slotOther.H );
 		otherBaseInventory._entries.Remove( itemFromOther.Id );
 
-		var newSlotForThis = new InventorySlot( slotOther.X, slotOther.Y, thisEffectiveWInOther, thisEffectiveHInOther );
-		var newSlotForOther = new InventorySlot( slotThis.X, slotThis.Y, otherEffectiveWInThis, otherEffectiveHInThis );
-
-		if ( !otherBaseInventory.IsRectFree( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) ||
-		     !IsRectFree( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) )
+		// Check for collisions in target inventory for itemFromThis
+		if ( !otherBaseInventory.IsRectFree( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H ) )
 		{
+			// Restore original positions
 			FillRect( slotThis.X, slotThis.Y, slotThis.W, slotThis.H );
 			_entries.Add( itemFromThis.Id, entryThis );
 			otherBaseInventory.FillRect( slotOther.X, slotOther.Y, slotOther.W, slotOther.H );
@@ -797,11 +925,26 @@ public abstract class BaseInventory : IDisposable
 			return InventoryResult.PlacementCollision;
 		}
 
+		// Check for collisions in this inventory for itemFromOther
+		if ( !IsRectFree( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H ) )
+		{
+			// Restore original positions
+			FillRect( slotThis.X, slotThis.Y, slotThis.W, slotThis.H );
+			_entries.Add( itemFromThis.Id, entryThis );
+			otherBaseInventory.FillRect( slotOther.X, slotOther.Y, slotOther.W, slotOther.H );
+			otherBaseInventory._entries.Add( itemFromOther.Id, entryOther );
+			return InventoryResult.PlacementCollision;
+		}
+
+		// Apply the swap
 		otherBaseInventory.FillRect( newSlotForThis.X, newSlotForThis.Y, newSlotForThis.W, newSlotForThis.H );
 		otherBaseInventory._entries.Add( itemFromThis.Id, new Entry( itemFromThis, newSlotForThis ) );
 
 		FillRect( newSlotForOther.X, newSlotForOther.Y, newSlotForOther.W, newSlotForOther.H );
 		_entries.Add( itemFromOther.Id, new Entry( itemFromOther, newSlotForOther ) );
+
+		itemFromThis.Inventory = otherBaseInventory;
+		itemFromOther.Inventory = this;
 
 		itemFromThis.OnRemoved( this );
 		itemFromThis.OnAdded( otherBaseInventory );
@@ -816,7 +959,60 @@ public abstract class BaseInventory : IDisposable
 		otherBaseInventory.OnItemAdded?.Invoke( new Entry( itemFromThis, newSlotForThis ) );
 		otherBaseInventory.OnInventoryChangedInternal();
 
+		if ( IsNetworked && HasAuthority )
+		{
+			Network.BroadcastItemsSwappedBetween(
+				itemFromThis.Id, otherBaseInventory.InventoryId, newSlotForThis.X, newSlotForThis.Y,
+				itemFromOther.Id, InventoryId, newSlotForOther.X, newSlotForOther.Y
+			);
+		}
+
 		return InventoryResult.Success;
+	}
+
+	/// <summary>
+	/// Finds a valid position for the swapped item within the vacated space for cross-inventory swaps.
+	/// </summary>
+	private bool TryFindSwapPositionForBetween( InventorySlot vacatedSlot, int itemWidth, int itemHeight, out InventorySlot newSlot )
+	{
+		// Search within the bounds of the vacated slot for a valid position
+		var searchMinX = Math.Max( 0, vacatedSlot.X - itemWidth + 1 );
+		var searchMaxX = Math.Min( Width - itemWidth, vacatedSlot.X + vacatedSlot.W - 1 );
+		var searchMinY = Math.Max( 0, vacatedSlot.Y - itemHeight + 1 );
+		var searchMaxY = Math.Min( Height - itemHeight, vacatedSlot.Y + vacatedSlot.H - 1 );
+
+		// Prefer positions that keep the item within the vacated area, starting from the origin
+		for ( var y = vacatedSlot.Y; y <= searchMaxY; y++ )
+		{
+			for ( var x = vacatedSlot.X; x <= searchMaxX; x++ )
+			{
+				if ( IsInBounds( x, y, itemWidth, itemHeight ) )
+				{
+					newSlot = new InventorySlot( x, y, itemWidth, itemHeight );
+					return true;
+				}
+			}
+		}
+
+		// Try remaining positions in the extended search area
+		for ( var y = searchMinY; y <= searchMaxY; y++ )
+		{
+			for ( var x = searchMinX; x <= searchMaxX; x++ )
+			{
+				// Skip positions we already checked
+				if ( x >= vacatedSlot.X && y >= vacatedSlot.Y )
+					continue;
+
+				if ( IsInBounds( x, y, itemWidth, itemHeight ) )
+				{
+					newSlot = new InventorySlot( x, y, itemWidth, itemHeight );
+					return true;
+				}
+			}
+		}
+
+		newSlot = default;
+		return false;
 	}
 
 	/// <summary>
@@ -958,6 +1154,7 @@ public abstract class BaseInventory : IDisposable
 
 	public InventoryResult TryTakeAndPlace( InventoryItem item, int amount, InventorySlot slot, out InventoryItem placed )
 	{
+		Log.Info( "Try take and place: " + amount  );
 		placed = null;
 
 		// Check ownership for networked inventories
@@ -968,10 +1165,16 @@ public abstract class BaseInventory : IDisposable
 		if ( result != InventoryResult.Success )
 			return result;
 
+		Log.Info( "took the amount: " + amount  );
+
 		// Adjust slot size based on slot mode
 		var effectiveW = GetEffectiveWidth( taken );
 		var effectiveH = GetEffectiveHeight( taken );
-		var adjustedSlot = new InventorySlot( slot.X, slot.Y, effectiveW, effectiveH );
+		var adjustedSlot = slot with
+		{
+			W = effectiveW,
+			H = effectiveH
+		};
 
 		var placeResult = PlaceItem( taken, adjustedSlot );
 		if ( placeResult != InventoryResult.Success )
@@ -1037,6 +1240,47 @@ public abstract class BaseInventory : IDisposable
 			return InventoryResult.TransferNotAllowed;
 		}
 
+		// Check if there's a stackable item at the target position
+		var itemAtTarget = destination.GetItemAt( x, y );
+		if ( itemAtTarget != null && taken.MaxStackSize > 1 && destination.CanStack( itemAtTarget, taken ) )
+		{
+			var spaceLeft = itemAtTarget.SpaceLeftInStack();
+			if ( spaceLeft > 0 )
+			{
+				var amountToMove = Math.Min( taken.StackCount, spaceLeft );
+				itemAtTarget.StackCount += amountToMove;
+				taken.StackCount -= amountToMove;
+
+				destination.OnInventoryChangedInternal();
+
+				// If the entire stack was merged, we're done
+				if ( taken.StackCount <= 0 )
+				{
+					transferred = taken;
+					return InventoryResult.Success;
+				}
+
+				// Put the remainder back in the source
+				RevertTake( item, taken );
+				return InventoryResult.Success;
+			}
+		}
+
+		// Try to swap if there's an item at target
+		if ( itemAtTarget != null )
+		{
+			// Put the taken item back first
+			RevertTake( item, taken );
+
+			// Now try a proper swap using the full item
+			var swapResult = TrySwapBetween( item, itemAtTarget, destination );
+			if ( swapResult == InventoryResult.Success )
+				transferred = itemAtTarget;
+
+			return swapResult;
+		}
+
+		// No item at target, just place it
 		var transferResult = destination.TryAddAt( taken, x, y );
 		if ( transferResult != InventoryResult.Success )
 		{
@@ -1252,7 +1496,10 @@ public abstract class BaseInventory : IDisposable
 		OnItemAdded?.Invoke( new Entry( item, slot ) );
 
 		if ( IsNetworked && HasAuthority )
+		{
+			Log.Info( "Broadcasting item added at " + slot.X + ", " + slot.Y + " amount=" + item.StackCount  );
 			Network.BroadcastItemAdded( new Entry( item, slot ) );
+		}
 
 		OnInventoryChangedInternal();
 		return InventoryResult.Success;
@@ -1416,6 +1663,80 @@ public abstract class BaseInventory : IDisposable
 		{
 			_bypassAuthorityCheck = false;
 		}
+	}
+
+	/// <summary>
+	/// Forces two items to swap positions atomically. Used by networking to apply swap updates from the host.
+	/// This bypasses normal collision checks since the host has already validated the swap.
+	/// </summary>
+	internal void ForceSwapPositions( InventoryItem itemA, int newAX, int newAY, InventoryItem itemB, int newBX, int newBY )
+	{
+		if ( !_entries.TryGetValue( itemA.Id, out var entryA ) || !_entries.TryGetValue( itemB.Id, out var entryB ) )
+			return;
+
+		var oldSlotA = entryA.Slot;
+		var oldSlotB = entryB.Slot;
+
+		var effectiveWA = GetEffectiveWidth( itemA );
+		var effectiveHA = GetEffectiveHeight( itemA );
+		var effectiveWB = GetEffectiveWidth( itemB );
+		var effectiveHB = GetEffectiveHeight( itemB );
+
+		// Clear old positions
+		ClearRect( oldSlotA.X, oldSlotA.Y, oldSlotA.W, oldSlotA.H );
+		ClearRect( oldSlotB.X, oldSlotB.Y, oldSlotB.W, oldSlotB.H );
+
+		// Create new slots
+		var newSlotA = new InventorySlot( newAX, newAY, effectiveWA, effectiveHA );
+		var newSlotB = new InventorySlot( newBX, newBY, effectiveWB, effectiveHB );
+
+		// Fill new positions
+		FillRect( newSlotA.X, newSlotA.Y, newSlotA.W, newSlotA.H );
+		FillRect( newSlotB.X, newSlotB.Y, newSlotB.W, newSlotB.H );
+
+		// Update entries
+		_entries[itemA.Id] = new Entry( itemA, newSlotA );
+		_entries[itemB.Id] = new Entry( itemB, newSlotB );
+
+		OnItemMoved?.Invoke( itemA, newSlotA.X, newSlotA.Y );
+		OnItemMoved?.Invoke( itemB, newSlotB.X, newSlotB.Y );
+		OnInventoryChangedInternal();
+	}
+
+	/// <summary>
+	/// Forces an item to be removed from this inventory without normal checks. Used by networking.
+	/// </summary>
+	internal InventoryItem ForceRemoveItem( Guid itemId )
+	{
+		if ( !_entries.TryGetValue( itemId, out var entry ) )
+			return null;
+
+		var item = entry.Item;
+		ClearRect( entry.Slot.X, entry.Slot.Y, entry.Slot.W, entry.Slot.H );
+		_entries.Remove( itemId );
+
+		item.OnRemoved( this );
+		OnItemRemoved?.Invoke( entry );
+
+		return item;
+	}
+
+	/// <summary>
+	/// Forces an item to be added to this inventory at a specific position without normal checks. Used by networking.
+	/// </summary>
+	internal void ForceAddItem( InventoryItem item, int x, int y )
+	{
+		var effectiveW = GetEffectiveWidth( item );
+		var effectiveH = GetEffectiveHeight( item );
+		var slot = new InventorySlot( x, y, effectiveW, effectiveH );
+
+		FillRect( slot.X, slot.Y, slot.W, slot.H );
+		_entries[item.Id] = new Entry( item, slot );
+
+		item.Inventory = this;
+		item.OnAdded( this );
+		OnItemAdded?.Invoke( new Entry( item, slot ) );
+		OnInventoryChangedInternal();
 	}
 
 	public void Dispose()

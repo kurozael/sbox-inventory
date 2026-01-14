@@ -97,7 +97,7 @@ public class NetworkedInventory
 	{
 		if ( !ShouldSendRequest )
 		{
-			return amount == 0
+			return amount <= 0
 				? _inventory.TryTransferToAt( item, destination, x, y )
 				: _inventory.TrySplitAndTransferToAt( item, amount, destination, x, y, out _ );
 		}
@@ -259,6 +259,52 @@ public class NetworkedInventory
 
 		var message = new InventoryItemMoved( itemId, x, y );
 		BroadcastToRecipients( message );
+	}
+
+	internal void BroadcastItemsSwapped( Guid itemAId, int itemAX, int itemAY, Guid itemBId, int itemBX, int itemBY )
+	{
+		if ( !Connection.Local.IsHost )
+			return;
+
+		var message = new InventoryItemsSwapped( itemAId, itemAX, itemAY, itemBId, itemBX, itemBY );
+		BroadcastToRecipients( message );
+	}
+
+	internal void BroadcastItemsSwappedBetween( Guid itemAId, Guid itemADestInventoryId, int itemAX, int itemAY, Guid itemBId, Guid itemBDestInventoryId, int itemBX, int itemBY )
+	{
+		if ( !Connection.Local.IsHost )
+			return;
+
+		var message = new InventoryItemsSwappedBetween( itemAId, itemADestInventoryId, itemAX, itemAY, itemBId, itemBDestInventoryId, itemBX, itemBY );
+
+		// Broadcast to clients that have access to either inventory
+		if ( !InventorySystem.TryFind( itemBDestInventoryId, out var otherInventory ) )
+			return;
+
+		var targetConnections = new List<Connection>();
+		var serialized = TypeLibrary.ToBytes( message );
+
+		foreach ( var connection in Connection.All )
+		{
+			if ( connection == Connection.Local )
+				continue;
+
+			// Only send it if either inventory is global, or the connection is subscribed to either
+			var hasAccess = _inventory.Network.Mode == NetworkMode.Global ||
+				otherInventory.Network.Mode == NetworkMode.Global ||
+				_inventory.Subscribers.Contains( connection.Id ) ||
+				otherInventory.Subscribers.Contains( connection.Id );
+
+			if ( !hasAccess )
+				continue;
+
+			targetConnections.Add( connection );
+		}
+
+		using ( Rpc.FilterInclude( targetConnections ) )
+		{
+			ReceiveSwappedBetween( serialized );
+		}
 	}
 
 	internal void SendItemDataChangedList( IEnumerable<Guid> connections, InventoryItemDataChangedList list )
@@ -440,6 +486,10 @@ public class NetworkedInventory
 				HandleItemMoved( inventory, msg );
 				break;
 
+			case InventoryItemsSwapped msg:
+				HandleItemsSwapped( inventory, msg );
+				break;
+
 			case InventoryItemDataChangedList msg:
 				HandleItemDataChangedList( inventory, msg );
 				break;
@@ -496,6 +546,51 @@ public class NetworkedInventory
 		inventory.ExecuteWithoutAuthority( () =>
 		{
 			inventory.TryMove( item, msg.X, msg.Y );
+		});
+	}
+
+	private static void HandleItemsSwapped( BaseInventory inventory, InventoryItemsSwapped msg )
+	{
+		var itemA = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemAId ).Item;
+		var itemB = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemBId ).Item;
+		if ( itemA == null || itemB == null ) return;
+
+		inventory.ExecuteWithoutAuthority( () =>
+		{
+			inventory.ForceSwapPositions( itemA, msg.ItemAX, msg.ItemAY, itemB, msg.ItemBX, msg.ItemBY );
+		});
+	}
+
+	[Rpc.Broadcast]
+	private static void ReceiveSwappedBetween( byte[] data )
+	{
+		var msg = TypeLibrary.FromBytes<InventoryItemsSwappedBetween>( data );
+
+		// Find both inventories
+		if ( !InventorySystem.TryFind( msg.ItemADestInventoryId, out var inventoryADest ) )
+			return;
+		if ( !InventorySystem.TryFind( msg.ItemBDestInventoryId, out var inventoryBDest ) )
+			return;
+
+		var itemA = inventoryBDest.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemAId ).Item;
+		var itemB = inventoryADest.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemBId ).Item;
+
+		if ( itemA == null || itemB == null )
+			return;
+
+		// Execute the swap atomically
+		inventoryBDest.ExecuteWithoutAuthority( () =>
+		{
+			inventoryADest.ExecuteWithoutAuthority( () =>
+			{
+				// Remove both items from their current inventories
+				inventoryBDest.ForceRemoveItem( itemA.Id );
+				inventoryADest.ForceRemoveItem( itemB.Id );
+
+				// Add them to their new inventories
+				inventoryADest.ForceAddItem( itemA, msg.ItemAX, msg.ItemAY );
+				inventoryBDest.ForceAddItem( itemB, msg.ItemBX, msg.ItemBY );
+			});
 		});
 	}
 
@@ -656,7 +751,7 @@ public class NetworkedInventory
 		if ( item is null )
 			return InventoryResult.ItemNotInInventory;
 
-		return msg.Amount == 0
+		return msg.Amount <= 0
 			? inventory.TryTransferToAt( item, destination, msg.X, msg.Y )
 			: inventory.TrySplitAndTransferToAt( item, msg.Amount, destination, msg.X, msg.Y, out _ );
 	}
@@ -825,6 +920,50 @@ public struct InventoryItemMoved
 		ItemId = itemId;
 		X = x;
 		Y = y;
+	}
+}
+
+public struct InventoryItemsSwapped
+{
+	public Guid ItemAId;
+	public int ItemAX;
+	public int ItemAY;
+	public Guid ItemBId;
+	public int ItemBX;
+	public int ItemBY;
+
+	public InventoryItemsSwapped( Guid itemAId, int itemAX, int itemAY, Guid itemBId, int itemBX, int itemBY )
+	{
+		ItemAId = itemAId;
+		ItemAX = itemAX;
+		ItemAY = itemAY;
+		ItemBId = itemBId;
+		ItemBX = itemBX;
+		ItemBY = itemBY;
+	}
+}
+
+public struct InventoryItemsSwappedBetween
+{
+	public Guid ItemAId;
+	public Guid ItemADestInventoryId;
+	public int ItemAX;
+	public int ItemAY;
+	public Guid ItemBId;
+	public Guid ItemBDestInventoryId;
+	public int ItemBX;
+	public int ItemBY;
+
+	public InventoryItemsSwappedBetween( Guid itemAId, Guid itemADestInventoryId, int itemAX, int itemAY, Guid itemBId, Guid itemBDestInventoryId, int itemBX, int itemBY )
+	{
+		ItemAId = itemAId;
+		ItemADestInventoryId = itemADestInventoryId;
+		ItemAX = itemAX;
+		ItemAY = itemAY;
+		ItemBId = itemBId;
+		ItemBDestInventoryId = itemBDestInventoryId;
+		ItemBX = itemBX;
+		ItemBY = itemBY;
 	}
 }
 

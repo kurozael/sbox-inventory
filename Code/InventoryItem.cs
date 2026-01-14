@@ -11,7 +11,7 @@ namespace Conna.Inventory;
 /// </summary>
 public abstract class InventoryItem
 {
-	private static void OnNetworkedPropertySet<T>( WrappedPropertySet<T> property )
+	public static void OnNetworkedPropertySet<T>( WrappedPropertySet<T> property )
 	{
 		var oldValue = property.Getter();
 
@@ -72,7 +72,7 @@ public abstract class InventoryItem
 		}
 	}
 
-	private static void InvokeOnHost( WrappedMethod method, params object[] args )
+	public static void InvokeOnHost( WrappedMethod method, params object[] args )
 	{
 		if ( method.Object is InventoryItem { Inventory: not null } item )
 		{
