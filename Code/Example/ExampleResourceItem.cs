@@ -1,15 +1,15 @@
 ﻿using System.Collections.Generic;
 using Sandbox;
 
-namespace Conna.Inventory;
+namespace Conna.Inventory.Example;
 
 /// <summary>
 /// Base class for inventory items that are based from a <see cref="GameResource"/>.
 /// </summary>
-public class GameResourceItem<T> : InventoryItem where T : BaseItemAsset
+public class ExampleResourceItem<T> : InventoryItem where T : ItemGameResource
 {
 	/// <summary>
-	/// The <see cref="GameResource"/> that this item is based from.
+	/// The <see cref="ItemGameResource"/> that this item is based from.
 	/// </summary>
 	public T Resource { get; private set; }
 
@@ -20,7 +20,7 @@ public class GameResourceItem<T> : InventoryItem where T : BaseItemAsset
 	public override int Height => Resource?.Height ?? base.Height;
 
 	/// <summary>
-	/// Load data from the specified <see cref="GameResource"/>.
+	/// Load data from the specified <see cref="ItemGameResource"/>.
 	/// </summary>
 	public void LoadFromResource( T resource )
 	{

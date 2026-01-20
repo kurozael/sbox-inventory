@@ -6,7 +6,7 @@ namespace Conna.Inventory;
 /// A base item asset class that inherits <see cref="GameResource"/>. Inherit this for any
 /// further customization needed for game resource items.
 /// </summary>
-public abstract class BaseItemAsset : GameResource
+public abstract class ItemGameResource : GameResource
 {
 	[Property] public string DisplayName { get; set; }
 	[Property] public string Category { get; set; }
