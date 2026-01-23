@@ -105,6 +105,16 @@ public class NetworkedInventory
 		return await SendRequest( new InventoryTransferRequest( item.Id, destination.InventoryId, x, y, amount ) );
 	}
 
+	public async Task<InventoryResult> TryTake( InventoryItem item, int amount )
+	{
+		if ( ShouldSendRequest )
+		{
+			return await SendRequest( new InventoryTakeRequest( item.Id, amount, -1, -1 ) );
+		}
+
+		return _inventory.TryTake( item, amount, out _ );
+	}
+
 	public async Task<InventoryResult> TryTakeAndPlace( InventoryItem item, int amount, InventorySlot slot )
 	{
 		if ( ShouldSendRequest )
@@ -759,7 +769,14 @@ public class NetworkedInventory
 	private static InventoryResult HandleTakeRequest( BaseInventory inventory, InventoryTakeRequest msg )
 	{
 		var item = inventory.Entries.FirstOrDefault( e => e.Item.Id == msg.ItemId ).Item;
-		return item == null ? InventoryResult.ItemNotInInventory : inventory.TryTakeAndPlace( item, msg.Amount, new InventorySlot( msg.X, msg.Y, item.Width, item.Height ), out _ );
+
+		if ( item == null )
+			return InventoryResult.ItemNotInInventory;
+
+		if ( msg.X < 0 || msg.Y < 0 )
+			return inventory.TryTake( item, msg.Amount, out _ );
+
+		return inventory.TryTakeAndPlace( item, msg.Amount, new InventorySlot( msg.X, msg.Y, item.Width, item.Height ), out _ );
 	}
 
 	private static InventoryResult HandleCombineStacksRequest( BaseInventory inventory, InventoryCombineStacksRequest msg )

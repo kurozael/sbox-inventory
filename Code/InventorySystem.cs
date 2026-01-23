@@ -229,12 +229,16 @@ public class InventorySystem : GameObjectSystem<InventorySystem>, Component.INet
 				if ( item.DirtyProperties.Count == 0 )
 					continue;
 
+				var concreteType = TypeLibrary.GetType( item.GetType() );
 				var data = new Dictionary<string, object>();
 
 				foreach ( var memberId in item.DirtyProperties )
 				{
 					var memberDescription = TypeLibrary.GetMemberByIdent( memberId ) as PropertyDescription;
-					data[memberDescription.Name] = memberDescription.GetValue( item );
+
+					// Get the property from the actual concrete type, not the open generic
+					var concreteProperty = concreteType.GetProperty( memberDescription.Name );
+					data[memberDescription.Name] = concreteProperty.GetValue( item );
 				}
 
 				itemChangedEvents.Add( new InventoryItemDataChanged( item.Id, data ) );
